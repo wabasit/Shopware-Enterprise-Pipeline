@@ -2,7 +2,20 @@ import requests
 import time
 from typing import Dict, Generator, Optional
 
+"""
+    Flexible API extractor supporting page-based, offset-based, cursor-based, and link-based pagination.
 
+    :param base_url: API endpoint
+    :param headers: Optional headers (API keys)
+    :param params: Query params to include (start date)
+    :param pagination_strategy: 'page', 'offset', 'cursor', 'link', or 'auto'
+    :param limit: Number of records per page/request
+    :param max_pages: Safety cap on requests
+    :param delay: Seconds to wait between calls
+    :param max_retries: Number of retries on failure
+    :param timeout: Request timeout in seconds
+    :yield: One record (dict) at a time
+    """
 def extract_data(
     base_url: str,
     headers: Optional[Dict] = None,
