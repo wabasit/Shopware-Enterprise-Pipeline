@@ -37,9 +37,11 @@ def poll_single_event(
                 response.raise_for_status()
                 data = response.json()
 
-                if isinstance(data, dict) and data.get("session_id"):
+                # Check for new schema structure
+                required_fields = ["customer_id", "interaction_type", "channel", "rating", "timestamp"]
+
+                if isinstance(data, dict) and all(field in data for field in required_fields):
                     yield data
-                    event_count += 1
                 else:
                     print(f"[INFO] Empty or malformed response: {data}")
 
@@ -52,7 +54,7 @@ def poll_single_event(
         else:
             print("[ERROR] Max retries reached. Stopping polling.")
             break
-        
+
         print(f"[POLLING] Attempt #{event_count + 1 if max_events else '?'}")
 
 
