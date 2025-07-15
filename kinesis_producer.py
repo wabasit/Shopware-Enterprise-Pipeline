@@ -5,14 +5,20 @@ import time
 import requests
 from botocore.exceptions import ClientError
 from typing import Dict, Generator, Optional
+import logging
+import watchtower
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(watchtower.CloudWatchLogHandler(log_group="kinesis-pipeline-logs"))
+logger.info("Logger initialized for Kinesis pipeline.")
 
 def poll_api(
     base_url: str,
     headers: Optional[Dict] = None,
     params: Optional[Dict] = None,
     poll_interval: float = 2.0,
-    timeout: int = 10,
+    timeout: int = 30,
     max_events: Optional[int] = None,
     max_retries: int = 3,
 ) -> Generator[Dict, None, None]:
@@ -35,17 +41,17 @@ def poll_api(
                     yield data
                     event_count += 1
                 else:
-                    print(f"[INFO] Empty or malformed response: {data}")
+                    logger.info(f"[INFO] Empty or malformed response: {data}")
                 break
             except requests.exceptions.RequestException as e:
                 wait = poll_interval * (2 ** attempt)
-                print(f"[Retry {attempt+1}] Error: {e}. Retrying in {wait:.1f}s...")
+                logger.warning(f"[Retry {attempt+1}] Error: {e}. Retrying in {wait:.1f}s...")
                 time.sleep(wait)
         else:
-            print("[ERROR] Max retries reached for API.")
+            logger.error("[ERROR] Max retries reached for API.")
             break
 
-        print(f"[POLLING] Event #{event_count}")
+        logger.info(f"[POLLING] Event #{event_count}")
         time.sleep(poll_interval)
 
 
@@ -73,7 +79,7 @@ def send_to_kinesis(stream_name: str, region: str, event: dict, max_retries=3):
             break
 
         except ClientError as e:
-            print(f"[Retry {attempt+1}] Failed to send to Kinesis: {e}")
+            logger.warning(f"[Retry {attempt+1}] Failed to send to Kinesis: {e}")
             time.sleep(2 ** attempt)
 
             cloudwatch.put_metric_data(
@@ -85,7 +91,7 @@ def send_to_kinesis(stream_name: str, region: str, event: dict, max_retries=3):
                 }]
             )
     else:
-        print(f"[ERROR] Failed to send after {max_retries} retries.")
+        logger.error(f"[ERROR] Failed to send after {max_retries} retries.")
         cloudwatch.put_metric_data(
             Namespace='KinesisIngestion',
             MetricData=[{
@@ -105,4 +111,4 @@ if __name__ == "__main__":
         for event in poll_api(API_URL):
             send_to_kinesis(STREAM_NAME, REGION, event)
     except KeyboardInterrupt:
-        print("[EXIT] Graceful shutdown by user.")
+        logger.info("[EXIT] Graceful shutdown by user.")
