@@ -1,6 +1,6 @@
 import requests
 import time
-from typing import Dict, Generator, Optional
+from typing import Dict, Generator, Optional, Union
 
 def extract_data(
     base_url: str,
@@ -14,22 +14,8 @@ def extract_data(
     timeout: int = 10,
 ) -> Generator[Dict, None, None]:
     """
-    API extractor with support for page, offset, cursor, link, and auto-detection pagination.
-    Streams data one record at a time.
-
-    Args:
-        base_url (str): API endpoint
-        headers (dict): Optional request headers
-        params (dict): Query parameters
-        pagination_strategy (str): 'page', 'offset', 'cursor', 'link', or 'auto'
-        limit (int): Items per request (for offset or cursor)
-        max_pages (int): Max requests before stopping
-        delay (float): Delay between requests
-        max_retries (int): Max retry attempts
-        timeout (int): Timeout for requests
-
-    Yields:
-        dict: Single record from the API
+    Flexible API extractor supporting page, offset, cursor, link-based and single-record APIs.
+    Yields one record (dict) at a time.
     """
     headers = headers or {}
     params = params or {}
@@ -63,7 +49,7 @@ def extract_data(
                 print(f"[Attempt {attempt + 1}] Error fetching data: {e}. Retrying in {wait_time:.1f}s...")
                 time.sleep(wait_time)
         else:
-            print(f"[ERROR] Failed to fetch data after {max_retries} attempts.")
+            print(f"[ERROR] Failed after {max_retries} retries. Exiting.")
             break
 
         try:
@@ -72,33 +58,47 @@ def extract_data(
             print("[ERROR] Invalid JSON. Skipping this response.")
             break
 
-        # Handle various data structures
+        # Debug output to verify API structure
+        # print("[DEBUG] Raw response:", data)
+
+        # Handle various response formats
         if isinstance(data, list):
-            records = data
-        else:
-            records = data.get('results') or data.get('data') or []
+            for record in data:
+                yield record
 
-        if not records:
-            print("[INFO] No records found in response.")
-            break
-
-        for record in records:
-            yield record
-
-        # Pagination strategy
-        if pagination_strategy == 'link' or (pagination_strategy == 'auto' and data.get('next')):
-            next_url = data.get('next')
-            if not next_url:
+        elif isinstance(data, dict):
+            # Case 1: Single object (not paginated)
+            if all(k in data for k in ['session_id', 'timestamp', 'event_type']):
+                yield data
                 break
-        elif pagination_strategy == 'cursor' or (pagination_strategy == 'auto' and ('next_cursor' in data or 'next_page_token' in data)):
-            cursor = data.get('next_cursor') or data.get('next_page_token')
-            if not cursor:
+
+            # Case 2: Paginated data under 'results' or 'data'
+            records = data.get('results') or data.get('data')
+            if isinstance(records, list):
+                for record in records:
+                    yield record
+            else:
+                print("[INFO] No records found in response.")
                 break
-        elif pagination_strategy == 'offset':
-            offset += limit
-        elif pagination_strategy == 'page':
-            page += 1
+
+            # Pagination handling
+            if pagination_strategy == 'link' or (pagination_strategy == 'auto' and data.get('next')):
+                next_url = data.get('next')
+                if not next_url:
+                    break
+            elif pagination_strategy == 'cursor' or (pagination_strategy == 'auto' and 'next_cursor' in data):
+                cursor = data.get('next_cursor') or data.get('next_page_token')
+                if not cursor:
+                    break
+            elif pagination_strategy == 'offset':
+                offset += limit
+            elif pagination_strategy == 'page':
+                page += 1
+            else:
+                break
+
         else:
+            print("[WARN] Unsupported response format.")
             break
 
         time.sleep(delay)
