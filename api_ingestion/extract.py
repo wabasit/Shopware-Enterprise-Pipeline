@@ -2,20 +2,6 @@ import requests
 import time
 from typing import Dict, Generator, Optional
 
-"""
-    Flexible API extractor supporting page-based, offset-based, cursor-based, and link-based pagination.
-
-    :param base_url: API endpoint
-    :param headers: Optional headers (API keys)
-    :param params: Query params to include (start date)
-    :param pagination_strategy: 'page', 'offset', 'cursor', 'link', or 'auto'
-    :param limit: Number of records per page/request
-    :param max_pages: Safety cap on requests
-    :param delay: Seconds to wait between calls
-    :param max_retries: Number of retries on failure
-    :param timeout: Request timeout in seconds
-    :yield: One record (dict) at a time
-    """
 def extract_data(
     base_url: str,
     headers: Optional[Dict] = None,
@@ -27,6 +13,24 @@ def extract_data(
     max_retries: int = 3,
     timeout: int = 10,
 ) -> Generator[Dict, None, None]:
+    """
+    API extractor with support for page, offset, cursor, link, and auto-detection pagination.
+    Streams data one record at a time.
+
+    Args:
+        base_url (str): API endpoint
+        headers (dict): Optional request headers
+        params (dict): Query parameters
+        pagination_strategy (str): 'page', 'offset', 'cursor', 'link', or 'auto'
+        limit (int): Items per request (for offset or cursor)
+        max_pages (int): Max requests before stopping
+        delay (float): Delay between requests
+        max_retries (int): Max retry attempts
+        timeout (int): Timeout for requests
+
+    Yields:
+        dict: Single record from the API
+    """
     headers = headers or {}
     params = params or {}
 
@@ -48,6 +52,7 @@ def extract_data(
 
         url_to_fetch = next_url if pagination_strategy == 'link' else base_url
 
+        # Retry mechanism
         for attempt in range(max_retries):
             try:
                 response = requests.get(url_to_fetch, headers=headers, params=full_params, timeout=timeout)
@@ -64,18 +69,28 @@ def extract_data(
         try:
             data = response.json()
         except ValueError:
-            print("[ERROR] Invalid JSON. Skipping.")
+            print("[ERROR] Invalid JSON. Skipping this response.")
             break
 
-        records = data.get('results') or data.get('data') or []
+        # Handle various data structures
+        if isinstance(data, list):
+            records = data
+        else:
+            records = data.get('results') or data.get('data') or []
+
+        if not records:
+            print("[INFO] No records found in response.")
+            break
+
         for record in records:
             yield record
 
+        # Pagination strategy
         if pagination_strategy == 'link' or (pagination_strategy == 'auto' and data.get('next')):
             next_url = data.get('next')
             if not next_url:
                 break
-        elif pagination_strategy == 'cursor' or (pagination_strategy == 'auto' and 'next_cursor' in data):
+        elif pagination_strategy == 'cursor' or (pagination_strategy == 'auto' and ('next_cursor' in data or 'next_page_token' in data)):
             cursor = data.get('next_cursor') or data.get('next_page_token')
             if not cursor:
                 break
