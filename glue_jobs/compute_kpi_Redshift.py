@@ -447,3 +447,44 @@ def write_to_redshift(df, table_name, current_processing_date_str, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write to Redshift KPI table {table_name} for date {current_processing_date_str}", str(e))
         raise
+
+def write_processed_data_to_redshift(df, table_name, current_processing_date_str, log_data, source_type):
+    """
+    Writes processed Silver layer data (inventory or POS for a specific processing_date) 
+    to Redshift for historical record. Uses upsert logic.
+
+    Args:
+        df (DataFrame): The Spark DataFrame to write.
+        table_name (str): The target Redshift table name.
+        current_processing_date_str (str): The specific date string (YYYY-MM-DD) for which data is being written.
+        log_data (dict): Dictionary for structured logging.
+        source_type (str): 'inventory' or 'pos' for logging clarity.
+    """
+    try:
+        log_message(log_data, "INFO", f"Writing processed {source_type} data for {current_processing_date_str} to Redshift table: {table_name}.")
+
+        df_with_metadata = df \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('redshift_load_timestamp', current_timestamp())
+
+        df_dynamic = DynamicFrame.fromDF(df_with_metadata, glueContext, f"df_dynamic_{source_type}_processed_redshift_{current_processing_date_str}")
+
+        glueContext.write_dynamic_frame.from_jdbc_conf(
+            frame=df_dynamic,
+            catalog_connection=REDSHIFT_CONNECTION,
+            connection_options={
+                # CHANGED: Delete only by processing_date for robustness with internal RUN_TIMESTAMP
+                "preactions": f"DELETE FROM {table_name} WHERE processing_date = '{current_processing_date_str}';",
+                "dbtable": table_name,
+                "database": "dev"
+            },
+            redshift_tmp_dir=args["TempDir"],
+            transformation_ctx=f"write_redshift_processed_{source_type}_{current_processing_date_str}"
+        )
+
+        row_count = df.count()
+        log_message(log_data, "INFO", f"Successfully wrote {row_count} rows of processed {source_type} data to {table_name} for {current_processing_date_str}")
+
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write processed {source_type} data to Redshift table {table_name} for {current_processing_date_str}", str(e))
+        raise
