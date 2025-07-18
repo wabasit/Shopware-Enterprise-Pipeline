@@ -32,3 +32,24 @@ def lambda_handler(event, context):
 
          # Extract the filename from the full key/path
         filename = source_key.split('/')[-1]
+
+         # Define the new destination key (path) where the file will be copied
+        destination_key = f"{DESTINATION_PREFIX}{filename}"
+
+        try:
+            # Log the copy action
+            print(f"Copying {source_key} to {destination_key}...")
+            
+            # Copy the file from the original location to the destination path within the same bucket
+            s3.copy_object(
+                Bucket=source_bucket,
+                CopySource={'Bucket': source_bucket, 'Key': source_key},
+                Key=destination_key
+            )
+
+             # Log success message
+            print(f"Successfully copied to {destination_key}")
+        except Exception as e:
+            # Log and raise any errors that occur during the copy operation
+            print(f"Error copying file: {e}")
+            raise e
