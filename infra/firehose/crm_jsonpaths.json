@@ -1,0 +1,11 @@
+{
+  "jsonpaths": [
+    "$.rating",
+    "$.customer_id",
+    "$.message_excerpt",
+    "$.channel",
+    "$.interaction_type",
+    "$.ingestion_timestamp",
+    "$.event_timestamp"
+  ]
+}
