@@ -18,3 +18,12 @@ sc = SparkContext.getOrCreate()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 job = Job(glueContext)
+
+# Get job parameters
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME',
+    'BUCKET_NAME',
+    'DATABASE_NAME',
+    'start_processing_date', # Optional: for backfill range (format YYYY-MM-DD)
+    'end_processing_date'    # Optional: for backfill range (format YYYY-MM-DD)
+])
