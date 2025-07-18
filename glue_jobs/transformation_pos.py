@@ -145,3 +145,44 @@ def save_logs_to_s3(log_data):
         'deduplication_keys': ['transaction_id'], # Key for deduplication
         'deduplication_order_by': 'timestamp' # Column to order by for deduplication
     }
+
+def read_pos_data_from_catalog(log_data):
+    """
+    Read POS data from Glue Data Catalog.
+
+    Args:
+        log_data: Logging data structure
+        
+    Returns:
+        Spark DataFrame or None if failed
+    """
+    try:
+        table_name = "pos_raw"
+        
+        log_message(log_data, "INFO", f"Reading POS data from catalog table: {table_name}")
+        
+        # Create dynamic frame from catalog
+        dynamic_frame = glueContext.create_dynamic_frame.from_catalog(
+            database=DATABASE_NAME,
+            table_name=table_name,
+            transformation_ctx=f"read_pos"
+        )
+        
+        # Convert to Spark DataFrame
+        df = dynamic_frame.toDF()
+        
+        # Filter for current processing date partitions if the raw data is partitioned by 'partition_date'
+        if 'partition_date' in df.columns:
+            log_message(log_data, "INFO", f"Filtering POS data for partition_date = {PROCESSING_DATE}")
+            df = df.filter(col('partition_date') == PROCESSING_DATE)
+        else:
+            log_message(log_data, "WARN", f"Table {table_name} does not have 'partition_date' column. Reading all data available via catalog.")
+        
+        row_count = df.count()
+        log_message(log_data, "INFO", f"Successfully read {row_count} rows from POS table")
+        
+        return df
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to read POS data from catalog", str(e))
+        return None
