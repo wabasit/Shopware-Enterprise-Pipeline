@@ -118,3 +118,35 @@ def save_logs_to_s3(log_data):
         print(f"Logs saved to: {log_path}")
     except Exception as e:
         print(f"ERROR: Failed to save logs to S3: {str(e)}")
+
+def get_schema_for_source(source_type):
+    """
+    Define expected schemas for 'inventory' data source based on the provided schema.
+    Raises ValueError if source_type is not 'inventory'.
+
+    Args:
+        source_type: 'inventory'
+        
+    Returns:
+        Dictionary with schema definition and validation rules
+    """
+    if source_type == 'inventory':
+        return {
+            'required_fields': ['inventory_id', 'product_id', 'warehouse_id', 'stock_level', 'last_updated'],
+            'schema': StructType([
+                StructField('inventory_id', IntegerType(), False),
+                StructField('product_id', IntegerType(), False),
+                StructField('warehouse_id', IntegerType(), False),
+                StructField('stock_level', IntegerType(), False),
+                StructField('restock_threshold', IntegerType(), True), # Nullable
+                StructField('last_updated', LongType(), False) # Changed to LongType for epoch seconds
+            ]),
+            'validation_rules': {
+                'stock_level': lambda col: col >= 0, # Stock level must be non-negative
+                'restock_threshold': lambda col: (col.isNull()) | (col >= 0), # Restock threshold can be null or non-negative
+                'last_updated': lambda col: (col.isNotNull()) & (col > 0) # last_updated must not be null and be a positive epoch
+            }
+        }
+    else:
+        # This branch should ideally not be reached as only 'inventory' is processed
+        raise ValueError(f"Unsupported source type: {source_type}. This job only processes 'inventory' data.")
