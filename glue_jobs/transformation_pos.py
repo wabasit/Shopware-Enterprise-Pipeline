@@ -552,3 +552,86 @@ def process_pos_data(log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Processing failed for POS data due to unexpected error", str(e))
         return False
+
+
+def main():
+    """
+    Main execution function of the Glue job.
+    Handles single-day or multi-day processing based on job parameters.
+    """
+    # Setup logging dictionary (initial setup)
+    log_data = setup_logging()
+    
+    global PROCESSING_DATE # Declare global so we can modify it
+    
+    try:
+        log_message(log_data, "INFO", "Starting POS Data Validation & Transformation job")
+        log_message(log_data, "INFO", f"Job Run ID: {RUN_TIMESTAMP}")
+        
+        # Determine processing dates
+        dates_to_process = []
+        start_date_param = args.get('start_processing_date')
+        end_date_param = args.get('end_processing_date')
+
+        if start_date_param and end_date_param:
+            # Process a date range if both start and end dates are provided
+            try:
+                start_date = datetime.strptime(start_date_param, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_param, '%Y-%m-%d').date()
+                
+                if start_date > end_date:
+                    log_message(log_data, "ERROR", "Start date cannot be after end date.")
+                    raise ValueError("Invalid date range.")
+
+                current_date_iter = start_date
+                while current_date_iter <= end_date:
+                    dates_to_process.append(current_date_iter.strftime('%Y-%m-%d'))
+                    current_date_iter += timedelta(days=1)
+                log_message(log_data, "INFO", f"Processing a date range: {start_date_param} to {end_date_param}")
+
+            except ValueError as e:
+                log_message(log_data, "ERROR", f"Invalid date format for --start_processing_date or --end_processing_date. Expected YYYY-MM-DD. Aborting.", str(e))
+                raise Exception("Date parsing error.")
+        else:
+            # Default to current UTC date if no range specified
+            default_date = current_utc_time.strftime('%Y-%m-%d') # Default to today
+            dates_to_process.append(default_date)
+            log_message(log_data, "INFO", f"Processing single date (default): {default_date}")
+
+        all_succeeded = True
+        for current_processing_date in dates_to_process:
+            # Set the global PROCESSING_DATE for the current iteration
+            PROCESSING_DATE = current_processing_date
+            
+            log_message(log_data, "INFO", f"--- Starting processing for date: {PROCESSING_DATE} ---")
+            
+            success = process_pos_data(log_data) # Call POS specific processing function
+            
+            if not success:
+                all_succeeded = False
+                log_message(log_data, "ERROR", f"POS data processing FAILED for date: {PROCESSING_DATE}. This run will continue to process other dates if applicable, but the overall job status will be marked as failed.")
+
+        # Overall job status summary
+        if all_succeeded:
+            log_message(log_data, "INFO", "All specified POS data processing completed successfully.")
+        else:
+            log_message(log_data, "ERROR", "One or more daily POS data processing failed within the job run.")
+            # Raise an exception to mark the Glue job as failed in the console
+            raise Exception("Job finished with partial failures in date range processing.")
+            
+    except Exception as e:
+        log_message(log_data, "ERROR", "Job failed with an unhandled exception in main execution", str(e))
+        # Re-raise to ensure Glue job status reflects failure
+        raise
+    
+    finally:
+        # Always attempt to save logs to S3, regardless of job success or failure
+        save_logs_to_s3(log_data)
+        
+        # Commit the Glue job. This is crucial for Glue to mark the job as succeeded.
+        # If an exception is re-raised before this, the job will be marked as failed.
+        job.commit()
+
+# Execute the main function when the script runs
+if __name__ == "__main__":
+    main()
