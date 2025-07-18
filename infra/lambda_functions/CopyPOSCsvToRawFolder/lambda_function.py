@@ -53,3 +53,9 @@ def lambda_handler(event, context):
             # Log and raise any errors that occur during the copy operation
             print(f"Error copying file: {e}")
             raise e
+        
+         # Return a success response
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Processing complete.')
+    }
