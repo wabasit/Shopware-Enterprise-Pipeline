@@ -362,3 +362,31 @@ def deduplicate_data(df, source_type, log_data):
         log_message(log_data, "ERROR", f"De-duplication failed for {source_type}", str(e))
         # Re-raise to indicate a critical failure if de-duplication itself fails
         raise
+
+def write_to_silver(df, source_type, log_data):
+    """
+    Write transformed 'inventory' data to Silver layer.
+    Uses 'append' mode to add new data to existing partitions.
+    
+    Args:
+        df: Transformed and deduplicated DataFrame
+        source_type: 'inventory'
+        log_data: Logging data structure
+    """
+    try:
+        output_path = f"{S3_PATHS['silver_inventory']}" # Base Silver path for inventory
+        
+        log_message(log_data, "INFO", f"Writing {source_type} data to Silver layer base path: {output_path}")
+        
+        df.write \
+          .mode('append') \
+          .option('path', output_path) \
+          .partitionBy('processing_date') \
+          .format('parquet') \
+          .save()
+        
+        log_message(log_data, "INFO", f"Successfully wrote {source_type} data to Silver layer for PROCESSING_DATE={PROCESSING_DATE}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write {source_type} data to Silver layer", str(e))
+        raise # Re-raise to indicate a critical failure
