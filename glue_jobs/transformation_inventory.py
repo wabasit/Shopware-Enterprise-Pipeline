@@ -30,3 +30,30 @@ args = getResolvedOptions(sys.argv, [
 # Configuration parameters
 BUCKET_NAME = args['BUCKET_NAME']
 DATABASE_NAME = args['DATABASE_NAME']
+
+# --- AUTOMATIC GENERATION OF RUN_TIMESTAMP ---
+# Use UTC for consistency across AWS services
+current_utc_time = datetime.utcnow()
+# RUN_TIMESTAMP: Format: YYYYMMDD_HHMMSS (for unique job run identification)
+RUN_TIMESTAMP = current_utc_time.strftime('%Y%m%d_%H%M%S')
+# --- END AUTOMATIC GENERATION ---
+
+# S3 paths configuration (only for inventory)
+S3_PATHS = {
+    'inventory_raw': f's3://{BUCKET_NAME}/raw/batch/inventory-raw/',
+    'silver_inventory': f's3://{BUCKET_NAME}/processed/inventory/',
+    'validation_errors': f's3://{BUCKET_NAME}/errors/validation/', # Generic path for errors
+    'archive': f's3://{BUCKET_NAME}/archive/', # Generic path for archive
+    'logs': f's3://{BUCKET_NAME}/logs/validation/' # Generic path for logs
+}
+
+# Initialize job
+job.init(args['JOB_NAME'], args)
+
+# Initialize S3 client for archival operations
+s3_client = boto3.client('s3')
+
+# PROCESSING_DATE is now a global variable that will be set dynamically in main()
+# It needs an initial placeholder value for `setup_logging` when it's first called,
+# but it will be updated per iteration in `main()`.
+PROCESSING_DATE = current_utc_time.strftime('%Y-%m-%d')
