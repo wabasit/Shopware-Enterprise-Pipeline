@@ -488,3 +488,40 @@ def write_processed_data_to_redshift(df, table_name, current_processing_date_str
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write processed {source_type} data to Redshift table {table_name} for {current_processing_date_str}", str(e))
         raise
+
+def write_errors_to_s3(df, error_type, current_processing_date_str, log_data):
+    """
+    Write failed records to S3 errors location
+    
+    Args:
+        df: DataFrame with failed records
+        error_type: Type of error (e.g., 'failed_joins')
+        current_processing_date_str: The date for which the errors occurred.
+        log_data: Logging data structure
+    """
+    try:
+        if df.count() == 0:
+            log_message(log_data, "INFO", f"No {error_type} errors to write for {current_processing_date_str}")
+            return
+        
+        error_path = f"{S3_PATHS['kpi_errors']}{error_type}/{RUN_TIMESTAMP}/{current_processing_date_str}/"
+        
+        log_message(log_data, "INFO", f"Writing {error_type} errors for {current_processing_date_str} to: {error_path}")
+        
+        df_with_metadata = df \
+            .withColumn('error_timestamp', current_timestamp()) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('error_type', lit(error_type)) \
+            .withColumn('processing_date', lit(current_processing_date_str)) # Add processing_date for audit
+        
+        df_with_metadata.write \
+            .mode('overwrite') \
+            .option('path', error_path) \
+            .format('json') \
+            .save()
+        
+        error_count = df.count()
+        log_message(log_data, "INFO", f"Successfully wrote {error_count} {error_type} error records for {current_processing_date_str}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write {error_type} error records for {current_processing_date_str}", str(e))
