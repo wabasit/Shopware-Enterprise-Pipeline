@@ -276,3 +276,48 @@ def read_pos_data_from_catalog(log_data):
         log_message(log_data, "ERROR", f"Validation failed for POS data", str(e))
         # Return original DF with a generic error reason if validation setup itself fails
         return None, df.withColumn('error_reason', lit(f"Validation setup error: {str(e)}")), {'status': 'error', 'reason': str(e)}
+    
+    def transform_pos_data(df, log_data):
+    """
+    Apply transformations to validated POS data.
+    
+    Args:
+        df: Spark DataFrame with valid data
+        log_data: Logging data structure
+        
+    Returns:
+        Transformed DataFrame
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting transformation for POS data")
+        
+        df_transformed = df
+        
+        # Convert epoch timestamp to TimestampType
+        timestamp_col_name = get_pos_schema()['deduplication_order_by']
+        df_transformed = df_transformed.withColumn(f'{timestamp_col_name}_timestamp',
+                                                    from_unixtime(col(timestamp_col_name)).cast(TimestampType()))
+        
+        # Add derived columns specific to POS
+        df_transformed = df_transformed \
+            .withColumn('sale_category',
+                        when(col('revenue') >= 100, 'HIGH_VALUE')
+                        .when((col('revenue') >= 50) & (col('revenue') < 100), 'MEDIUM_VALUE')
+                        .otherwise('LOW_VALUE'))
+        
+        # Add processing_date for partitioning
+        df_transformed = df_transformed.withColumn('processing_date', lit(PROCESSING_DATE))
+        
+        # Add audit columns (using UTC for consistency)
+        df_transformed = df_transformed \
+            .withColumn('processed_timestamp_utc', lit(datetime.utcnow())) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP))
+        
+        row_count = df_transformed.count()
+        log_message(log_data, "INFO", f"Transformation completed for POS data: {row_count} rows")
+        
+        return df_transformed
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Transformation failed for POS data", str(e))
+        return None
