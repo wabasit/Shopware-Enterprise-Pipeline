@@ -323,3 +323,42 @@ def transform_data(df, source_type, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Transformation failed for {source_type}", str(e))
         return None
+
+def deduplicate_data(df, source_type, log_data):
+    """
+    De-duplicates the inventory data, keeping the latest record based on last_updated_timestamp
+    for each unique inventory_id.
+
+    Args:
+        df: Spark DataFrame with transformed data.
+        source_type: 'inventory'
+        log_data: Logging data structure
+
+    Returns:
+        Deduplicated Spark DataFrame.
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting de-duplication for {source_type} data based on 'inventory_id' and 'last_updated_timestamp'.")
+
+        # Define window specification: partition by inventory_id, order by last_updated_timestamp descending
+        window_spec = Window.partitionBy("inventory_id").orderBy(col("last_updated_timestamp").desc())
+
+        # Apply window function to assign row numbers, then filter to keep only the latest record
+        deduplicated_df = df.withColumn("rn", row_number().over(window_spec)) \
+                            .filter(col("rn") == 1) \
+                            .drop("rn") # Drop the row_number column as it's no longer needed
+
+        original_count = df.count()
+        deduplicated_count = deduplicated_df.count()
+
+        if original_count > deduplicated_count:
+            log_message(log_data, "INFO", f"De-duplication completed: {original_count - deduplicated_count} duplicates removed. Remaining records: {deduplicated_count}")
+        else:
+            log_message(log_data, "INFO", f"De-duplication completed: No duplicates found.")
+        
+        return deduplicated_df
+
+    except Exception as e:
+        log_message(log_data, "ERROR", f"De-duplication failed for {source_type}", str(e))
+        # Re-raise to indicate a critical failure if de-duplication itself fails
+        raise
