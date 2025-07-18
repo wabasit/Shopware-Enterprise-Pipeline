@@ -366,3 +366,48 @@ def compute_inventory_kpis(joined_df, current_processing_date_str, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to compute inventory KPIs for {current_processing_date_str}", str(e))
         return None
+    
+def compute_regional_kpis(joined_df, current_processing_date_str, log_data):
+    """
+    Computes daily regional KPIs.
+    
+    Args:
+        joined_df: Joined DataFrame containing inventory and POS data
+        current_processing_date_str: The specific date string (YYYY-MM-DD) for which KPIs are being calculated.
+        log_data: Logging data structure
+        
+    Returns:
+        DataFrame with regional KPIs or None if input is empty/invalid
+    """
+    try:
+        if joined_df is None or joined_df.count() == 0:
+            log_message(log_data, "WARN", f"Joined DataFrame is empty for {current_processing_date_str}, cannot compute regional KPIs.")
+            return None
+
+        log_message(log_data, "INFO", f"Computing regional KPIs for {current_processing_date_str}.")
+
+        regional_kpis = joined_df.withColumn('store_id', explode('store_list')) \
+            .groupBy('analysis_date', 'store_id') \
+            .agg(
+                # Explicit casting for DECIMAL columns
+                sum('total_revenue').cast(DecimalType(18, 4)).alias('store_daily_revenue'),
+                sum('total_quantity').alias('store_daily_quantity_sold'),
+                sum('transaction_count').alias('store_daily_transactions')
+            ) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('kpi_creation_timestamp', current_timestamp()) \
+            .withColumn('processing_date', lit(current_processing_date_str))
+        
+        # Ensure NOT NULL columns are indeed not null (analysis_date, store_id, processing_date)
+        regional_kpis = regional_kpis.filter(
+            col('analysis_date').isNotNull() &
+            col('store_id').isNotNull() &
+            col('processing_date').isNotNull()
+        )
+
+        log_message(log_data, "INFO", f"Regional KPIs computed for {current_processing_date_str}: {regional_kpis.count()} rows.")
+        return regional_kpis
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to compute regional KPIs for {current_processing_date_str}", str(e))
+        return None
