@@ -118,3 +118,30 @@ def save_logs_to_s3(log_data):
         print(f"Logs saved to: {log_path}")
     except Exception as e:
         print(f"ERROR: Failed to save logs to S3: {str(e)}")
+
+    def get_pos_schema():
+    """
+    Define expected schema and validation rules for 'pos' data.
+        
+    Returns:
+        Dictionary with schema definition and validation rules
+    """
+    return {
+        'required_fields': ['transaction_id', 'store_id', 'product_id', 'quantity', 'revenue', 'timestamp'],
+        'schema': StructType([
+            StructField('transaction_id', StringType(), False),
+            StructField('store_id', IntegerType(), False),
+            StructField('product_id', IntegerType(), False),
+            StructField('quantity', IntegerType(), False),
+            StructField('revenue', FloatType(), False),
+            StructField('discount_applied', FloatType(), True), # Nullable
+            StructField('timestamp', LongType(), False) # Changed to LongType for epoch seconds
+        ]),
+        'validation_rules': {
+            'quantity': lambda col: col >= 0, # Quantity must be non-negative
+            'revenue': lambda col: col >= 0, # Revenue must be non-negative
+            'timestamp': lambda col: (col.isNotNull()) & (col > 0) # timestamp must not be null and be a positive epoch
+        },
+        'deduplication_keys': ['transaction_id'], # Key for deduplication
+        'deduplication_order_by': 'timestamp' # Column to order by for deduplication
+    }
