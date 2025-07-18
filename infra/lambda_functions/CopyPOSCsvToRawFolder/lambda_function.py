@@ -20,3 +20,7 @@ def lambda_handler(event, context):
          # Extract the object key (file path) and decode it in case it contains special characters
         source_key = urllib.parse.unquote_plus(record['s3']['object']['key'])
 
+# Skip processing if the file is not a CSV
+        if not source_key.lower().endswith('.csv'):
+            print(f"Skipped non-CSV file: {source_key}")
+            continue
