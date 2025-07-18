@@ -411,3 +411,39 @@ def compute_regional_kpis(joined_df, current_processing_date_str, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to compute regional KPIs for {current_processing_date_str}", str(e))
         return None
+    
+def write_to_redshift(df, table_name, current_processing_date_str, log_data):
+    """
+    Write DataFrame to Redshift (for KPI tables, using upsert logic based on analysis_date).
+    
+    Args:
+        df: DataFrame to write
+        table_name: Target Redshift table name (e.g., shopware_KPIs.sales_kpi_daily)
+        current_processing_date_str: The date for which the data is being written.
+        log_data: Logging data structure
+    """
+    try:
+        log_message(log_data, "INFO", f"Writing data to Redshift KPI table: {table_name} for date {current_processing_date_str} with upsert.")
+        
+        # Convert DataFrame to DynamicFrame
+        df_dynamic = DynamicFrame.fromDF(df, glueContext, "df_dynamic_kpi_redshift")
+        
+        glueContext.write_dynamic_frame.from_jdbc_conf(
+            frame=df_dynamic,
+            catalog_connection=REDSHIFT_CONNECTION,
+            connection_options={
+                # CHANGED: Delete only by analysis_date for robustness with internal RUN_TIMESTAMP
+                "preactions": f"DELETE FROM {table_name} WHERE analysis_date = '{current_processing_date_str}';",
+                "dbtable": table_name,
+                "database": "dev"  # IMPORTANT: Update with your actual Redshift database name
+            },
+            redshift_tmp_dir=args["TempDir"], 
+            transformation_ctx=f"write_redshift_kpi_{table_name.split('.')[-1]}_{current_processing_date_str}"
+        )
+        
+        row_count = df.count()
+        log_message(log_data, "INFO", f"Successfully wrote {row_count} rows to {table_name} for date {current_processing_date_str}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write to Redshift KPI table {table_name} for date {current_processing_date_str}", str(e))
+        raise
