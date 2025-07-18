@@ -493,3 +493,72 @@ def archive_processed_files(source_type, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Archival failed for {source_type}", str(e))
         # Do not raise here, as archival is often a best-effort operation and shouldn't fail the whole job.
+
+def process_source(source_type, log_data):
+    """
+    Main processing function for 'inventory' data: read, validate, transform, deduplicate, write, archive.
+    
+    Args:
+        source_type: Should always be 'inventory' for this script.
+        log_data: Logging data structure
+        
+    Returns:
+        Boolean indicating success for this specific source.
+    """
+    try:
+        if source_type != 'inventory':
+            log_message(log_data, "ERROR", f"Invalid source_type '{source_type}' passed to process_source. Only 'inventory' is supported.")
+            return False
+
+        log_message(log_data, "INFO", f"Starting processing for {source_type} for date {PROCESSING_DATE}")
+        
+        # Read data from catalog
+        raw_df = read_data_from_catalog(source_type, log_data)
+        if raw_df is None or raw_df.count() == 0:
+            log_message(log_data, "WARN", f"No raw data found or read for {source_type} for {PROCESSING_DATE}. Skipping further processing for this source.")
+            return True # Consider it a success if no data to process (e.g., no files for date)
+        
+        # Validate data
+        valid_df, invalid_df, validation_summary = validate_data(raw_df, source_type, log_data)
+        
+        if valid_df is None and validation_summary.get('status') == 'failed':
+            log_message(log_data, "ERROR", f"Critical validation failure for {source_type}. Aborting source processing.")
+            if invalid_df is not None:
+                write_errors_to_s3(invalid_df, source_type, log_data)
+            return False
+        
+        # Write error records if any
+        if invalid_df.count() > 0:
+            write_errors_to_s3(invalid_df, source_type, log_data)
+            log_message(log_data, "WARN", f"{invalid_df.count()} invalid records found for {source_type}. See error logs.")
+        
+        if valid_df.count() == 0:
+            log_message(log_data, "WARN", f"No valid records to process for {source_type}. Skipping transformation and silver write.")
+            # Still attempt to archive if raw_df was read, as files were 'processed' (even if all invalid)
+            archive_processed_files(source_type, log_data)
+            return True # Consider successful if valid_df is empty but processing completed.
+            
+        # Transform valid data
+        transformed_df = transform_data(valid_df, source_type, log_data)
+        if transformed_df is None:
+            log_message(log_data, "ERROR", f"Transformation failed for {source_type}. Aborting source processing.")
+            return False
+        
+        # Deduplicate data
+        deduplicated_df = deduplicate_data(transformed_df, source_type, log_data)
+        if deduplicated_df is None:
+            log_message(log_data, "ERROR", f"De-duplication failed for {source_type}. Aborting source processing.")
+            return False
+
+        # Write to Silver layer
+        write_to_silver(deduplicated_df, source_type, log_data)
+        
+        # Archive processed files
+        archive_processed_files(source_type, log_data)
+        
+        log_message(log_data, "INFO", f"Successfully completed processing for {source_type} for date {PROCESSING_DATE}")
+        return True
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Processing failed for {source_type} due to unexpected error", str(e))
+        return False
