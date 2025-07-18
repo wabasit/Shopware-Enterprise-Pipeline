@@ -24,3 +24,8 @@ def lambda_handler(event, context):
         if not source_key.lower().endswith('.csv'):
             print(f"Skipped non-CSV file: {source_key}")
             continue
+
+          # Prevent processing files already in the destination path to avoid infinite loops
+        if source_key.startswith(DESTINATION_PREFIX):
+            print(f"File already in destination folder, skipping: {source_key}")
+            continue
