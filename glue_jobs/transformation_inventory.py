@@ -428,3 +428,68 @@ def write_errors_to_s3(df, source_type, log_data):
         
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write error records for {source_type}", str(e))
+
+def archive_processed_files(source_type, log_data):
+    """
+    Move processed 'inventory' files from raw to archive location for the current processing date.
+    Assumes raw files contain the date in YYYYMMDD format in their filename and are JSON.
+    
+    Args:
+        source_type: 'inventory'
+        log_data: Logging data structure
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting archival process for {source_type} for date {PROCESSING_DATE}")
+        
+        source_prefix = f"raw/batch/inventory-raw/" # Always 'inventory/' for this job
+        archive_prefix = f"archive/inventory/{PROCESSING_DATE}/" # Specific archive path for inventory
+        
+        # Convert PROCESSING_DATE to YYYYMMDD for filename matching
+        processing_date_yyyymmdd = PROCESSING_DATE.replace('-', '')
+        
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=BUCKET_NAME, Prefix=source_prefix)
+        
+        archived_count = 0
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    source_key = obj['Key'] # e.g., 'raw/batch/inventory/data_20240715_100000.json'
+                    
+                    # Ensure it's a JSON file and not a directory or other type
+                    if source_key.endswith('/') or not source_key.lower().endswith('.json'):
+                        continue
+                    
+                    filename = source_key.split('/')[-1]
+                    
+                    # Heuristic to find YYYYMMDD in filename to match with PROCESSING_DATE
+                    # Example: inventory_20240715_123456.json
+                    file_date_match = re.search(r'(\d{8})', filename)
+                    
+                    if not file_date_match:
+                        log_message(log_data, "INFO", f"Skipping {filename}: No YYYYMMDD date found in filename for archival.")
+                        continue
+                    
+                    file_date_yyyymmdd = file_date_match.group(1)
+                    
+                    if file_date_yyyymmdd == processing_date_yyyymmdd:
+                        # Move to archive
+                        archive_key = archive_prefix + filename
+                        
+                        log_message(log_data, "INFO", f"Archiving {source_key} to {archive_key}")
+                        s3_client.copy_object(
+                            Bucket=BUCKET_NAME,
+                            CopySource={'Bucket': BUCKET_NAME, 'Key': source_key},
+                            Key=archive_key
+                        )
+                        
+                        s3_client.delete_object(Bucket=BUCKET_NAME, Key=source_key)
+                        archived_count += 1
+                    else:
+                        log_message(log_data, "INFO", f"Skipping {filename}: File date {file_date_yyyymmdd} does not match PROCESSING_DATE {processing_date_yyyymmdd}.")
+        
+        log_message(log_data, "INFO", f"Archived {archived_count} files for {source_type} for date {PROCESSING_DATE}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Archival failed for {source_type}", str(e))
+        # Do not raise here, as archival is often a best-effort operation and shouldn't fail the whole job.
