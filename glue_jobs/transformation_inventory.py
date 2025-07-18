@@ -165,3 +165,113 @@ def read_silver_data(source_type, current_processing_date_str, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to read {source_type} Silver data for {current_processing_date_str}", str(e))
         return None
+
+def join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, log_data):
+    """
+    Join inventory and POS data on product_id and nearest timestamp using 2-hour buckets.
+    This function expects data for a single processing date as defined by the current iteration.
+
+    Args:
+        inventory_df: Inventory DataFrame
+        pos_df: POS DataFrame
+        current_processing_date_str: The specific date string (YYYY-MM-DD) for KPI calculation.
+        log_data: Logging data structure
+
+    Returns:
+        Tuple of (joined_df, failed_joins_df)
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting inventory-POS data join with 2-hour time buckets for KPI calculation for date {current_processing_date_str}.")
+
+        # Prepare inventory data with 2-hour time buckets
+        inventory_prep = inventory_df.withColumn(
+            'time_bucket',
+            floor(hour(col('last_updated_timestamp')) / 2) * 2
+        ).withColumn(
+            'inv_date',
+            to_date(col('last_updated_timestamp'))
+        )
+
+        # Prepare POS data with 2-hour time buckets
+        # --- FIX 1: Use 'timestamp_timestamp' instead of 'transaction_timestamp' ---
+        pos_prep = pos_df.withColumn(
+            'time_bucket',
+            floor(hour(col('timestamp_timestamp')) / 2) * 2
+        ).withColumn(
+            'pos_date',
+            to_date(col('timestamp_timestamp'))
+        )
+
+        # Aggregate inventory data by product, date, and time bucket (latest stock level)
+        inventory_agg = inventory_prep.groupBy('product_id', 'inv_date', 'time_bucket') \
+            .agg(
+                last('stock_level', True).alias('stock_level'),
+                last('stock_status', True).alias('stock_status'),
+                last('warehouse_id', True).alias('warehouse_id'),
+                max('last_updated_timestamp').alias('inv_timestamp')
+            )
+
+        # Aggregate POS data by product, date, and time bucket
+        pos_agg = pos_prep.groupBy('product_id', 'pos_date', 'time_bucket') \
+            .agg(
+                sum('quantity').alias('total_quantity'),
+                # --- FIX 2: Use 'revenue' instead of 'net_revenue' ---
+                sum('revenue').alias('total_revenue'),
+                # --- FIX 3: Use 'discount_applied' instead of 'discount_amount' ---
+                sum('discount_applied').alias('total_discount'),
+                count('transaction_id').alias('transaction_count'),
+                collect_set('store_id').alias('store_list'),
+                max('timestamp_timestamp').alias('pos_timestamp') # Also ensure this uses the correct column
+            )
+
+        # The rest of your join logic remains the same
+        joined_df = inventory_agg.alias('inv').join(
+            pos_agg.alias('pos'),
+            (col('inv.product_id') == col('pos.product_id')) &
+            (col('inv.inv_date') == col('pos.pos_date')) &
+            (col('inv.time_bucket') == col('pos.time_bucket')),
+            'inner'
+        ).select(
+            col('inv.product_id'),
+            col('inv.inv_date').alias('analysis_date'),
+            col('inv.time_bucket'),
+            col('inv.stock_level'),
+            col('inv.stock_status'),
+            col('inv.warehouse_id'),
+            lit(10.0).alias('cost_price'), # Placeholder: Replace with actual column or join
+            lit('General').alias('category'), # Placeholder: Replace with actual column or join
+            col('pos.total_quantity'),
+            col('pos.total_revenue'),
+            col('pos.total_discount'),
+            col('pos.transaction_count'),
+            col('pos.store_list'),
+            col('inv.inv_timestamp'),
+            col('pos.pos_timestamp')
+        )
+
+        # Find failed joins (inventory without matching POS data for the same product, date, and time bucket)
+        failed_joins_df = inventory_agg.alias('inv').join(
+            pos_agg.alias('pos'),
+            (col('inv.product_id') == col('pos.product_id')) &
+            (col('inv.inv_date') == col('pos.pos_date')) &
+            (col('inv.time_bucket') == col('pos.time_bucket')),
+            'left_anti'
+        ).select(
+            col('inv.product_id'),
+            col('inv.inv_date').alias('analysis_date'),
+            col('inv.time_bucket'),
+            col('inv.stock_level'),
+            col('inv.warehouse_id'),
+            lit('No matching POS data for product, date, and time bucket').alias('error_reason')
+        )
+
+        joined_count = joined_df.count()
+        failed_count = failed_joins_df.count()
+
+        log_message(log_data, "INFO", f"KPI Join completed for {current_processing_date_str} - Successful: {joined_count}, Failed: {failed_count}")
+
+        return joined_df, failed_joins_df
+
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to join inventory and POS data for KPI calculation for {current_processing_date_str}", str(e))
+        return None, None
