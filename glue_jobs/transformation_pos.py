@@ -488,3 +488,67 @@ def archive_processed_pos_files(log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Archival failed for POS data", str(e))
         # Do not raise here, as archival is often a best-effort operation and shouldn't fail the whole job.
+
+def process_pos_data(log_data):
+    """
+    Main processing function for POS data: read, validate, transform, deduplicate, write, archive.
+    
+    Args:
+        log_data: Logging data structure
+        
+    Returns:
+        Boolean indicating success for this specific source.
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting processing for POS data for date {PROCESSING_DATE}")
+        
+        # Read data from catalog
+        raw_df = read_pos_data_from_catalog(log_data)
+        if raw_df is None or raw_df.count() == 0:
+            log_message(log_data, "WARN", f"No raw data found or read for POS for {PROCESSING_DATE}. Skipping further processing.")
+            return True # Consider it a success if no data to process (e.g., no files for date)
+        
+        # Validate data
+        valid_df, invalid_df, validation_summary = validate_pos_data(raw_df, log_data)
+        
+        if valid_df is None and validation_summary.get('status') == 'failed':
+            log_message(log_data, "ERROR", f"Critical validation failure for POS data. Aborting processing.")
+            if invalid_df is not None:
+                write_pos_errors_to_s3(invalid_df, log_data)
+            return False
+        
+        # Write error records if any
+        if invalid_df.count() > 0:
+            write_pos_errors_to_s3(invalid_df, log_data)
+            log_message(log_data, "WARN", f"{invalid_df.count()} invalid records found for POS data. See error logs.")
+        
+        if valid_df.count() == 0:
+            log_message(log_data, "WARN", f"No valid records to process for POS data. Skipping transformation and silver write.")
+            # Still attempt to archive if raw_df was read, as files were 'processed' (even if all invalid)
+            archive_processed_pos_files(log_data)
+            return True # Consider successful if valid_df is empty but processing completed.
+            
+        # Transform valid data
+        transformed_df = transform_pos_data(valid_df, log_data)
+        if transformed_df is None:
+            log_message(log_data, "ERROR", f"Transformation failed for POS data. Aborting processing.")
+            return False
+        
+        # Deduplicate data
+        deduplicated_df = deduplicate_pos_data(transformed_df, log_data)
+        if deduplicated_df is None:
+            log_message(log_data, "ERROR", f"De-duplication failed for POS data. Aborting processing.")
+            return False
+
+        # Write to Silver layer
+        write_pos_to_silver(deduplicated_df, log_data)
+        
+        # Archive processed files
+        archive_processed_pos_files(log_data)
+        
+        log_message(log_data, "INFO", f"Successfully completed processing for POS data for date {PROCESSING_DATE}")
+        return True
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Processing failed for POS data due to unexpected error", str(e))
+        return False
