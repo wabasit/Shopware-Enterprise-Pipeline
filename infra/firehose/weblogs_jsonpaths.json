@@ -1,0 +1,12 @@
+{
+  "jsonpaths": [
+    "$.event_type",
+    "$.browser",
+    "$.device_type",
+    "$.page",
+    "$.user_id",
+    "$.session_id",
+    "$.ingestion_timestamp",
+    "$.event_timestamp"
+  ]
+}
