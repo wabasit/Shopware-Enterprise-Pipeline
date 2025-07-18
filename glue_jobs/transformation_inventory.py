@@ -75,3 +75,15 @@ job.init(args['JOB_NAME'], args)
 
 # Initialize S3 client
 s3_client = boto3.client('s3')
+
+def setup_logging():
+    """
+    Setup structured logging for the job
+    """
+    log_data = {
+        'job_name': args['JOB_NAME'],
+        'run_timestamp': RUN_TIMESTAMP,
+        'processing_date': args.get('PROCESSING_DATE'), # Initial processing_date for the run
+        'logs': []
+    }
+    return log_data
