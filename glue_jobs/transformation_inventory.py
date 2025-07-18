@@ -57,3 +57,17 @@ s3_client = boto3.client('s3')
 # It needs an initial placeholder value for `setup_logging` when it's first called,
 # but it will be updated per iteration in `main()`.
 PROCESSING_DATE = current_utc_time.strftime('%Y-%m-%d')
+
+
+def setup_logging():
+    """
+    Setup structured logging for the job.
+    Note: 'processing_date' in log_data will be updated dynamically in main()
+          when processing multiple dates. This initial value is a placeholder.
+    """
+    log_data = {
+        'job_name': args['JOB_NAME'],
+        'run_timestamp': RUN_TIMESTAMP,
+        'logs': []
+    }
+    return log_data
