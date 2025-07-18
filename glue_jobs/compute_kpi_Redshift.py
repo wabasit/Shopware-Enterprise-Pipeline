@@ -555,3 +555,150 @@ def get_processing_metrics(inventory_df, pos_df, joined_df, current_processing_d
         
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to calculate processing metrics for {current_processing_date_str}", str(e))
+
+def main():
+    """
+    Main execution function
+    """
+    # Setup logging early as it's used in date parsing
+    log_data = setup_logging()
+    
+    overall_status = "SUCCESS" # Track overall job status
+    processing_dates = []
+    log_mode = "Unknown"
+
+    try:
+        start_date_str = args.get('start_processing_date')
+        end_date_str = args.get('end_processing_date')
+        
+        if start_date_str and end_date_str:
+            # Backfill mode: use the provided date range
+            start_processing_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_processing_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            # Ensure start_date is not after end_date
+            if start_processing_date > end_processing_date:
+                raise ValueError("start_processing_date cannot be after end_processing_date.")
+            
+            delta = timedelta(days=1)
+            while start_processing_date <= end_processing_date:
+                processing_dates.append(start_processing_date.strftime('%Y-%m-%d'))
+                start_processing_date += delta
+            
+            log_mode = "Backfill"
+            log_message(log_data, "INFO", f"Job running in Backfill mode for dates from {start_date_str} to {end_date_str}")
+        elif args.get('PROCESSING_DATE'):
+            # Daily run mode: process only the single specified PROCESSING_DATE
+            processing_dates = [args['PROCESSING_DATE']]
+            log_mode = "Daily"
+            log_message(log_data, "INFO", f"Job running in Daily mode for date {args['PROCESSING_DATE']}")
+        else:
+            raise ValueError("Either 'PROCESSING_DATE' or 'start_processing_date' and 'end_processing_date' must be provided.")
+
+        log_message(log_data, "INFO", f"Starting KPI Computation & Redshift Load job ({log_mode} mode)")
+        
+        for current_processing_date_str in processing_dates:
+            log_message(log_data, "INFO", f"--- Processing date: {current_processing_date_str} ---")
+            
+            # Read Silver layer data for the current processing date
+            inventory_df = read_silver_data('inventory', current_processing_date_str, log_data)
+            pos_df = read_silver_data('pos', current_processing_date_str, log_data)
+            
+            if inventory_df is None or pos_df is None or inventory_df.count() == 0 or pos_df.count() == 0:
+                log_message(log_data, "WARN", f"Skipping processing for {current_processing_date_str} due to missing or empty Silver layer data.")
+                overall_status = "PARTIAL_FAILURE"
+                continue # Move to the next date in the backfill range
+
+            # Write individual processed (filtered Silver) data to the new schema
+            try:
+                write_processed_data_to_redshift(inventory_df, REDSHIFT_PROCESSED_SOURCE_TABLES['inventory'], current_processing_date_str, log_data, 'inventory')
+                write_processed_data_to_redshift(pos_df, REDSHIFT_PROCESSED_SOURCE_TABLES['pos'], current_processing_date_str, log_data, 'pos')
+                log_message(log_data, "INFO", f"Successfully wrote individual inventory and POS data for {current_processing_date_str} to processed schema.")
+            except Exception as e:
+                log_message(log_data, "ERROR", f"Failed to write individual processed data for {current_processing_date_str} to Redshift: {str(e)}")
+                overall_status = "PARTIAL_FAILURE"
+                continue # Move to the next date, even if this step failed
+
+            # Join inventory and POS data for KPI computation
+            joined_df, failed_joins_df = join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, log_data)
+            
+            if joined_df is None or joined_df.count() == 0:
+                log_message(log_data, "WARN", f"No data after joining inventory and POS for {current_processing_date_str}. No KPIs will be computed for this date.")
+                if failed_joins_df is not None and failed_joins_df.count() > 0:
+                    write_errors_to_s3(failed_joins_df, 'failed_joins', current_processing_date_str, log_data)
+                overall_status = "PARTIAL_FAILURE"
+                continue # Move to the next date
+            
+            # Write failed joins to errors location
+            if failed_joins_df is not None and failed_joins_df.count() > 0:
+                write_errors_to_s3(failed_joins_df, 'failed_joins', current_processing_date_str, log_data)
+            
+            # Get processing metrics
+            get_processing_metrics(inventory_df, pos_df, joined_df, current_processing_date_str, log_data)
+            
+            # Compute different types of KPIs
+            sales_kpis = compute_sales_kpis(joined_df, current_processing_date_str, log_data)
+            inventory_kpis = compute_inventory_kpis(joined_df, current_processing_date_str, log_data)
+            regional_kpis = compute_regional_kpis(joined_df, current_processing_date_str, log_data)
+            
+            # Write KPIs to Redshift
+            kpi_results = {}
+            
+            if sales_kpis is not None and sales_kpis.count() > 0:
+                try:
+                    write_to_redshift(sales_kpis, REDSHIFT_KPI_TABLES['sales_kpi'], current_processing_date_str, log_data)
+                    kpi_results['sales_kpi'] = True
+                except Exception as e:
+                    log_message(log_data, "ERROR", f"Failed to write sales KPIs to Redshift for {current_processing_date_str}: {str(e)}")
+                    kpi_results['sales_kpi'] = False
+            else:
+                log_message(log_data, "INFO", f"No sales KPIs generated or found to write for {current_processing_date_str}.")
+                kpi_results['sales_kpi'] = False
+            
+            if inventory_kpis is not None and inventory_kpis.count() > 0:
+                try:
+                    write_to_redshift(inventory_kpis, REDSHIFT_KPI_TABLES['inventory_kpi'], current_processing_date_str, log_data)
+                    kpi_results['inventory_kpi'] = True
+                except Exception as e:
+                    log_message(log_data, "ERROR", f"Failed to write inventory KPIs to Redshift for {current_processing_date_str}: {str(e)}")
+                    kpi_results['inventory_kpi'] = False
+            else:
+                log_message(log_data, "INFO", f"No inventory KPIs generated or found to write for {current_processing_date_str}.")
+                kpi_results['inventory_kpi'] = False
+
+            if regional_kpis is not None and regional_kpis.count() > 0:
+                try:
+                    write_to_redshift(regional_kpis, REDSHIFT_KPI_TABLES['regional_kpi'], current_processing_date_str, log_data)
+                    kpi_results['regional_kpi'] = True
+                except Exception as e:
+                    log_message(log_data, "ERROR", f"Failed to write regional KPIs to Redshift for {current_processing_date_str}: {str(e)}")
+                    kpi_results['regional_kpi'] = False
+            else:
+                log_message(log_data, "INFO", f"No regional KPIs generated or found to write for {current_processing_date_str}.")
+                kpi_results['regional_kpi'] = False
+
+            # Check if all KPIs for the current date were successful
+            if not all(kpi_results.values()):
+                overall_status = "PARTIAL_FAILURE"
+                log_message(log_data, "WARN", f"Some KPI loads failed for date {current_processing_date_str}.")
+            else:
+                log_message(log_data, "INFO", f"All KPIs for date {current_processing_date_str} processed and loaded successfully.")
+
+        log_message(log_data, "INFO", f"Job finished with overall status: {overall_status}")
+        if overall_status == "PARTIAL_FAILURE":
+            raise Exception("Job finished with partial failures. Please review logs for details.")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", "Job failed with unexpected error", str(e))
+        overall_status = "FAILURE"
+        raise # Re-raise to mark the Glue job as failed in the console
+    
+    finally:
+        # Save logs to S3
+        save_logs_to_s3(log_data)
+        
+        # Commit the job
+        job.commit()
+
+# Execute main function
+if __name__ == "__main__":
+    main()
