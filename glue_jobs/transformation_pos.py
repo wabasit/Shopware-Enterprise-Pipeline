@@ -321,3 +321,43 @@ def read_pos_data_from_catalog(log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Transformation failed for POS data", str(e))
         return None
+    
+    def deduplicate_pos_data(df, log_data):
+    """
+    De-duplicates the POS data, keeping the latest record based on transaction_id and timestamp.
+
+    Args:
+        df: Spark DataFrame with transformed data.
+        log_data: Logging data structure
+
+    Returns:
+        Deduplicated Spark DataFrame.
+    """
+    try:
+        schema_config = get_pos_schema()
+        deduplication_keys = schema_config['deduplication_keys']
+        deduplication_order_by = schema_config['deduplication_order_by'] + '_timestamp' # Use the transformed timestamp column
+
+        log_message(log_data, "INFO", f"Starting de-duplication for POS data based on '{deduplication_keys}' and '{deduplication_order_by}'.")
+
+        # Define window specification: partition by deduplication_keys, order by deduplication_order_by descending
+        window_spec = Window.partitionBy(*deduplication_keys).orderBy(col(deduplication_order_by).desc())
+
+        # Apply window function to assign row numbers, then filter to keep only the latest record
+        deduplicated_df = df.withColumn("rn", row_number().over(window_spec)) \
+                            .filter(col("rn") == 1) \
+                            .drop("rn")
+
+        original_count = df.count()
+        deduplicated_count = deduplicated_df.count()
+
+        if original_count > deduplicated_count:
+            log_message(log_data, "INFO", f"De-duplication completed: {original_count - deduplicated_count} duplicates removed. Remaining records: {deduplicated_count}")
+        else:
+            log_message(log_data, "INFO", f"De-duplication completed: No duplicates found.")
+        
+        return deduplicated_df
+
+    except Exception as e:
+        log_message(log_data, "ERROR", f"De-duplication failed for POS data", str(e))
+        raise
