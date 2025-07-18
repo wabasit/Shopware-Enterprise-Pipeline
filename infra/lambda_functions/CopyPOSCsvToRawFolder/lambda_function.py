@@ -29,3 +29,6 @@ def lambda_handler(event, context):
         if source_key.startswith(DESTINATION_PREFIX):
             print(f"File already in destination folder, skipping: {source_key}")
             continue
+
+         # Extract the filename from the full key/path
+        filename = source_key.split('/')[-1]
