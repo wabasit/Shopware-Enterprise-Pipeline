@@ -525,3 +525,33 @@ def write_errors_to_s3(df, error_type, current_processing_date_str, log_data):
         
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write {error_type} error records for {current_processing_date_str}", str(e))
+
+def get_processing_metrics(inventory_df, pos_df, joined_df, current_processing_date_str, log_data):
+    """
+    Calculate and log processing metrics
+    
+    Args:
+        inventory_df: Inventory DataFrame (for current PROCESSING_DATE)
+        pos_df: POS DataFrame (for current PROCESSING_DATE)
+        joined_df: Joined DataFrame (for current PROCESSING_DATE)
+        current_processing_date_str: The date for which metrics are calculated.
+        log_data: Logging data structure
+    """
+    try:
+        inventory_count = inventory_df.count()
+        pos_count = pos_df.count()
+        joined_count = joined_df.count()
+
+        metrics = {
+            'inventory_records_read_for_date': inventory_count,
+            'pos_records_read_for_date': pos_count,
+            'joined_records_for_date': joined_count,
+            'join_success_rate': (joined_count / inventory_count) * 100 if inventory_count > 0 else 0,
+            'processing_date': current_processing_date_str,
+            'run_timestamp': RUN_TIMESTAMP
+        }
+        
+        log_message(log_data, "INFO", f"Processing metrics calculated for {current_processing_date_str}", metrics)
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to calculate processing metrics for {current_processing_date_str}", str(e))
