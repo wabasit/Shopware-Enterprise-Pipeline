@@ -150,3 +150,47 @@ def get_schema_for_source(source_type):
     else:
         # This branch should ideally not be reached as only 'inventory' is processed
         raise ValueError(f"Unsupported source type: {source_type}. This job only processes 'inventory' data.")
+
+def read_data_from_catalog(source_type, log_data):
+    """
+    Read data from Glue Data Catalog for the 'inventory' source.
+
+    Args:
+        source_type: 'inventory'
+        log_data: Logging data structure
+        
+    Returns:
+        Spark DataFrame or None if failed
+    """
+    try:
+        table_name = f"{source_type}_raw" # This will be 'inventory_raw'
+        
+        log_message(log_data, "INFO", f"Reading {source_type} data from catalog table: {table_name}")
+        
+        # Create dynamic frame from catalog
+        dynamic_frame = glueContext.create_dynamic_frame.from_catalog(
+            database=DATABASE_NAME,
+            table_name=table_name,
+            transformation_ctx=f"read_{source_type}"
+        )
+        
+        # Convert to Spark DataFrame
+        df = dynamic_frame.toDF()
+        
+        # Filter for current processing date partitions if the raw data is partitioned by 'partition_date'
+        # Important: This assumes raw data is partitioned. If not, the 'archive_processed_files'
+        # logic will still attempt to filter by filename date for archival.
+        if 'partition_date' in df.columns:
+            log_message(log_data, "INFO", f"Filtering {source_type} data for partition_date = {PROCESSING_DATE}")
+            df = df.filter(col('partition_date') == PROCESSING_DATE)
+        else:
+            log_message(log_data, "WARN", f"Table {table_name} does not have 'partition_date' column. Reading all data.")
+        
+        row_count = df.count()
+        log_message(log_data, "INFO", f"Successfully read {row_count} rows from {source_type} table")
+        
+        return df
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to read {source_type} data from catalog", str(e))
+        return None
