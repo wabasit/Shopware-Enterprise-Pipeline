@@ -120,13 +120,9 @@ def save_logs_to_s3(log_data):
         print(f"ERROR: Failed to save logs to S3: {str(e)}")
 
     def get_pos_schema():
-    """
-    Define expected schema and validation rules for 'pos' data.
-        
-    Returns:
-        Dictionary with schema definition and validation rules
-    """
-    return {
+
+# Function to get pos_schema
+        return {
         'required_fields': ['transaction_id', 'store_id', 'product_id', 'quantity', 'revenue', 'timestamp'],
         'schema': StructType([
             StructField('transaction_id', StringType(), False),
@@ -187,7 +183,7 @@ def read_pos_data_from_catalog(log_data):
         log_message(log_data, "ERROR", f"Failed to read POS data from catalog", str(e))
         return None
     
-    def validate_pos_data(df, log_data):
+def validate_pos_data(df, log_data):
     """
     Validate POS data against defined schema and rules.
 
@@ -277,7 +273,7 @@ def read_pos_data_from_catalog(log_data):
         # Return original DF with a generic error reason if validation setup itself fails
         return None, df.withColumn('error_reason', lit(f"Validation setup error: {str(e)}")), {'status': 'error', 'reason': str(e)}
     
-    def transform_pos_data(df, log_data):
+def transform_pos_data(df, log_data):
     """
     Apply transformations to validated POS data.
     
@@ -322,7 +318,7 @@ def read_pos_data_from_catalog(log_data):
         log_message(log_data, "ERROR", f"Transformation failed for POS data", str(e))
         return None
     
-    def deduplicate_pos_data(df, log_data):
+def deduplicate_pos_data(df, log_data):
     """
     De-duplicates the POS data, keeping the latest record based on transaction_id and timestamp.
 
