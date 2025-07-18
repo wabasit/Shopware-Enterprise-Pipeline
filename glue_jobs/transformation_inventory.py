@@ -390,3 +390,41 @@ def write_to_silver(df, source_type, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write {source_type} data to Silver layer", str(e))
         raise # Re-raise to indicate a critical failure
+
+def write_errors_to_s3(df, source_type, log_data):
+    """
+    Write invalid rows to errors location for 'inventory' data.
+    
+    Args:
+        df: DataFrame with invalid rows (should contain 'error_reason' column)
+        source_type: 'inventory'
+        log_data: Logging data structure
+    """
+    try:
+        if df.count() == 0:
+            log_message(log_data, "INFO", f"No errors to write for {source_type}")
+            return
+        
+        # Errors are stored under source_type/run_timestamp for traceability
+        error_path = f"{S3_PATHS['validation_errors']}{source_type}/{RUN_TIMESTAMP}/"
+        
+        log_message(log_data, "INFO", f"Writing {df.count()} error records for {source_type} to: {error_path}")
+        
+        # Add metadata columns for error analysis (using UTC for consistency)
+        df_with_metadata = df \
+            .withColumn('error_timestamp_utc', lit(datetime.utcnow())) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('processing_date_of_error', lit(PROCESSING_DATE)) \
+            .withColumn('source_type', lit(source_type))
+        
+        # Write as JSON for easier error analysis and readability
+        df_with_metadata.write \
+            .mode('overwrite') \
+            .option('path', error_path) \
+            .format('json') \
+            .save()
+        
+        log_message(log_data, "INFO", f"Successfully wrote error records for {source_type}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write error records for {source_type}", str(e))
