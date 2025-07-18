@@ -31,3 +31,19 @@ args = getResolvedOptions(sys.argv, [
 # Configuration parameters
 BUCKET_NAME = args['BUCKET_NAME']
 DATABASE_NAME = args['DATABASE_NAME']
+
+# --- AUTOMATIC GENERATION OF RUN_TIMESTAMP ---
+# Use UTC for consistency across AWS services
+current_utc_time = datetime.utcnow()
+# RUN_TIMESTAMP: Format: YYYYMMDD_HHMMSS (for unique job run identification)
+RUN_TIMESTAMP = current_utc_time.strftime('%Y%m%d_%H%M%S')
+# --- END AUTOMATIC GENERATION ---
+
+# S3 paths configuration (solely for POS)
+S3_PATHS = {
+    'pos_raw': f's3://{BUCKET_NAME}/raw/batch/pos-raw/', # For POS raw data
+    'silver_pos': f's3://{BUCKET_NAME}/processed/pos/', # For POS processed data
+    'validation_errors': f's3://{BUCKET_NAME}/errors/validation/', # Generic path for errors
+    'archive': f's3://{BUCKET_NAME}/archive/', # Generic path for archive
+    'logs': f's3://{BUCKET_NAME}/logs/validation/' # Generic path for logs
+}
