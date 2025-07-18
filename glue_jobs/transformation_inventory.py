@@ -41,3 +41,37 @@ DATABASE_NAME = args['DATABASE_NAME']
 REDSHIFT_CONNECTION = args['REDSHIFT_CONNECTION']
 REDSHIFT_KPI_SCHEMA = args['REDSHIFT_SCHEMA']
 REDSHIFT_PROCESSED_SCHEMA = args['REDSHIFT_PROCESSED_SCHEMA']
+
+# --- AUTOMATIC GENERATION OF RUN_TIMESTAMP ---
+# Use UTC for consistency across AWS services
+current_utc_time = datetime.utcnow()
+# RUN_TIMESTAMP: Format: YYYYMMDD_HHMMSS (for unique job run identification)
+RUN_TIMESTAMP = current_utc_time.strftime('%Y%m%d_%H%M%S')
+# --- END AUTOMATIC GENERATION ---
+
+# S3 paths configuration
+S3_PATHS = {
+    'silver_inventory': f's3://{BUCKET_NAME}/processed/inventory/',
+    'silver_pos': f's3://{BUCKET_NAME}/processed/pos/',
+    'kpi_errors': f's3://{BUCKET_NAME}/errors/kpi/',
+    'logs': f's3://{BUCKET_NAME}/logs/kpi/'
+}
+
+# Redshift table names
+REDSHIFT_KPI_TABLES = {
+    'sales_kpi': f'{REDSHIFT_KPI_SCHEMA}.sales_kpi_daily',
+    'inventory_kpi': f'{REDSHIFT_KPI_SCHEMA}.inventory_kpi_daily',
+    'regional_kpi': f'{REDSHIFT_KPI_SCHEMA}.regional_kpi_daily'
+}
+
+# Redshift processed source data table names (for Option 2, these are daily appends/upserts)
+REDSHIFT_PROCESSED_SOURCE_TABLES = {
+    'inventory': f'{REDSHIFT_PROCESSED_SCHEMA}.inventory_daily',
+    'pos': f'{REDSHIFT_PROCESSED_SCHEMA}.pos_daily'
+}
+
+# Initialize job
+job.init(args['JOB_NAME'], args)
+
+# Initialize S3 client
+s3_client = boto3.client('s3')
