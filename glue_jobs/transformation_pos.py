@@ -388,3 +388,40 @@ def write_pos_to_silver(df, log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write POS data to Silver layer", str(e))
         raise
+
+def write_pos_errors_to_s3(df, log_data):
+    """
+    Write invalid POS rows to errors location.
+    
+    Args:
+        df: DataFrame with invalid rows (should contain 'error_reason' column)
+        log_data: Logging data structure
+    """
+    try:
+        if df.count() == 0:
+            log_message(log_data, "INFO", f"No POS errors to write.")
+            return
+        
+        # Errors are stored under pos/run_timestamp for traceability
+        error_path = f"{S3_PATHS['validation_errors']}pos/{RUN_TIMESTAMP}/"
+        
+        log_message(log_data, "INFO", f"Writing {df.count()} error records for POS data to: {error_path}")
+        
+        # Add metadata columns for error analysis (using UTC for consistency)
+        df_with_metadata = df \
+            .withColumn('error_timestamp_utc', lit(datetime.utcnow())) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('processing_date_of_error', lit(PROCESSING_DATE)) \
+            .withColumn('source_type', lit("pos"))
+        
+        # Write as JSON for easier error analysis and readability
+        df_with_metadata.write \
+            .mode('overwrite') \
+            .option('path', error_path) \
+            .format('json') \
+            .save()
+        
+        log_message(log_data, "INFO", f"Successfully wrote POS error records.")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write POS error records", str(e))
