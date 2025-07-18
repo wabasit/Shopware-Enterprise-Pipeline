@@ -71,3 +71,28 @@ def setup_logging():
         'logs': []
     }
     return log_data
+
+def log_message(log_data, level, message, details=None):
+    """
+    Add structured log message to log data
+
+    Args:
+        log_data: Dictionary containing log information
+        level: Log level (INFO, WARN, ERROR)
+        message: Log message
+        details: Optional additional details
+    """
+    log_entry = {
+        'timestamp': datetime.now().isoformat(), # Use local time for log timestamp for readability in console
+        'level': level,
+        'message': message
+    }
+    if details:
+        log_entry['details'] = details
+
+    # Add PROCESSING_DATE to each log entry for multi-day runs if it's set globally
+    if 'PROCESSING_DATE' in globals():
+        log_entry['processing_date'] = globals()['PROCESSING_DATE']
+    
+    log_data['logs'].append(log_entry)
+    print(f"[{level}] {message}") # Also print to console for real-time monitoring
