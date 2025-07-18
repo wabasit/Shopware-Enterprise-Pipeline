@@ -96,3 +96,25 @@ def log_message(log_data, level, message, details=None):
     
     log_data['logs'].append(log_entry)
     print(f"[{level}] {message}") # Also print to console for real-time monitoring
+
+def save_logs_to_s3(log_data):
+    """
+    Save structured logs to S3
+
+    Args:
+        log_data: Dictionary containing all log information
+    """
+    try:
+        log_path = f"{S3_PATHS['logs']}{RUN_TIMESTAMP}/validation_logs.json"
+        log_json = json.dumps(log_data, indent=2, default=str) # Use default=str for datetime objects
+        
+        # Write to S3
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=log_path.replace(f's3://{BUCKET_NAME}/', ''), # Remove s3://bucket-name/ prefix
+            Body=log_json,
+            ContentType='application/json'
+        )
+        print(f"Logs saved to: {log_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to save logs to S3: {str(e)}")
