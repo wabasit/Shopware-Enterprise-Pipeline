@@ -16,3 +16,7 @@ def lambda_handler(event, context):
     for record in event['Records']:
   # Extract the source S3 bucket name
         source_bucket = record['s3']['bucket']['name']
+
+         # Extract the object key (file path) and decode it in case it contains special characters
+        source_key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+
