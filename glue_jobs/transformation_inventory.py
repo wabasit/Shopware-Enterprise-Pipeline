@@ -275,3 +275,48 @@ def join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, l
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to join inventory and POS data for KPI calculation for {current_processing_date_str}", str(e))
         return None, None
+    
+def compute_sales_kpis(joined_df, current_processing_date_str, log_data):
+    """
+    Computes daily sales KPIs.
+    
+    Args:
+        joined_df: Joined DataFrame containing inventory and POS data
+        current_processing_date_str: The specific date string (YYYY-MM-DD) for which KPIs are being calculated.
+        log_data: Logging data structure
+        
+    Returns:
+        DataFrame with sales KPIs or None if input is empty/invalid
+    """
+    try:
+        if joined_df is None or joined_df.count() == 0:
+            log_message(log_data, "WARN", f"Joined DataFrame is empty for {current_processing_date_str}, cannot compute sales KPIs.")
+            return None
+
+        log_message(log_data, "INFO", f"Computing sales KPIs for {current_processing_date_str}.")
+        
+        sales_kpis = joined_df.groupBy('analysis_date') \
+            .agg(
+                # Explicit casting for DECIMAL columns
+                sum('total_revenue').cast(DecimalType(18, 4)).alias('total_daily_revenue'),
+                sum('total_quantity').alias('total_daily_quantity_sold'),
+                sum('total_discount').cast(DecimalType(18, 4)).alias('total_daily_discount_given'),
+                count_distinct('product_id').alias('distinct_products_sold_daily'),
+                avg(col('total_revenue') / col('total_quantity')).cast(DecimalType(18, 4)).alias('average_price_per_item')
+            ) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
+            .withColumn('kpi_creation_timestamp', current_timestamp()) \
+            .withColumn('processing_date', lit(current_processing_date_str))
+        
+        # Ensure NOT NULL columns are indeed not null (analysis_date, processing_date)
+        sales_kpis = sales_kpis.filter(
+            col('analysis_date').isNotNull() &
+            col('processing_date').isNotNull()
+        )
+
+        log_message(log_data, "INFO", f"Sales KPIs computed for {current_processing_date_str}: {sales_kpis.count()} rows.")
+        return sales_kpis
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to compute sales KPIs for {current_processing_date_str}", str(e))
+        return None
