@@ -186,3 +186,93 @@ def read_pos_data_from_catalog(log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to read POS data from catalog", str(e))
         return None
+    
+    def validate_pos_data(df, log_data):
+    """
+    Validate POS data against defined schema and rules.
+
+    Args:
+        df: Spark DataFrame
+        log_data: Logging data structure
+        
+    Returns:
+        Tuple of (valid_df, invalid_df, validation_summary)
+    """
+    try:
+        schema_config = get_pos_schema()
+        required_fields = schema_config['required_fields']
+        validation_rules = schema_config['validation_rules']
+        expected_schema = schema_config['schema']
+        
+        log_message(log_data, "INFO", f"Starting validation for POS data")
+        
+        # 1. Check for required fields existence in the DataFrame
+        missing_fields = [field for field in required_fields if field not in df.columns]
+        if missing_fields:
+            error_msg = f"Missing critical required fields in input DataFrame: {missing_fields}"
+            log_message(log_data, "ERROR", error_msg)
+            # If critical fields are missing, the entire DF is considered unprocessable
+            return None, df.withColumn('error_reason', lit(error_msg)), {'status': 'failed', 'reason': error_msg}
+        
+        # 2. Cast to expected schema (this handles type mismatches by turning them into nulls if incompatible)
+        selected_cols = [col(field.name).cast(field.dataType).alias(field.name) for field in expected_schema.fields if field.name in df.columns]
+        
+        # Add columns from expected_schema that are not in df but are nullable
+        for field in expected_schema.fields:
+            if field.name not in df.columns and field.nullable:
+                selected_cols.append(lit(None).cast(field.dataType).alias(field.name))
+        
+        df_casted = df.select(*selected_cols)
+        
+        # 3. Build validation conditions and error reasons
+        invalid_conditions = []
+        error_reason_expr = lit(None) # Default to None, will be set for invalid rows
+        
+        # Check for null values in required fields *after* casting
+        for field in required_fields:
+            if field in df_casted.columns:
+                null_check = col(field).isNull()
+                invalid_conditions.append(null_check)
+                error_reason_expr = when(null_check, f"Null in required field: {field}").otherwise(error_reason_expr)
+        
+        # Apply validation rules
+        for field, rule in validation_rules.items():
+            if field in df_casted.columns:
+                rule_violation_check = ~rule(col(field))
+                invalid_conditions.append(rule_violation_check)
+                error_reason_expr = when(rule_violation_check, f"Rule violation for {field}").otherwise(error_reason_expr)
+
+        # Combine all invalid conditions using OR
+        combined_invalid_condition = lit(False)
+        if invalid_conditions:
+            for condition in invalid_conditions:
+                combined_invalid_condition = combined_invalid_condition | condition
+
+        df_with_validation = df_casted.withColumn('is_valid', ~combined_invalid_condition) \
+                                     .withColumn('error_reason', error_reason_expr)
+        
+        # Split into valid and invalid DataFrames
+        valid_df = df_with_validation.filter(col('is_valid') == True).drop('error_reason', 'is_valid')
+        invalid_df = df_with_validation.filter(col('is_valid') == False).drop('is_valid')
+        
+        # Get validation summary
+        total_rows = df.count() # Use count from original DF for total
+        valid_count = valid_df.count()
+        invalid_count = invalid_df.count()
+        
+        validation_summary = {
+            'total_rows': total_rows,
+            'valid_rows': valid_count,
+            'invalid_rows': invalid_count,
+            'validation_rate': (valid_count / total_rows) * 100 if total_rows > 0 else 0,
+            'status': 'success' if invalid_count == 0 else 'partial_success'
+        }
+        
+        log_message(log_data, "INFO", f"Validation completed for POS data", validation_summary)
+        
+        return valid_df, invalid_df, validation_summary
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Validation failed for POS data", str(e))
+        # Return original DF with a generic error reason if validation setup itself fails
+        return None, df.withColumn('error_reason', lit(f"Validation setup error: {str(e)}")), {'status': 'error', 'reason': str(e)}
