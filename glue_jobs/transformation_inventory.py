@@ -130,3 +130,38 @@ def save_logs_to_s3(log_data):
         print(f"Logs saved to: {log_path}")
     except Exception as e:
         print(f"ERROR: Failed to save logs to S3: {str(e)}")
+
+def read_silver_data(source_type, current_processing_date_str, log_data):
+    """
+    Read data for a specific processing_date from Silver layer.
+    
+    Args:
+        source_type: 'inventory' or 'pos'
+        current_processing_date_str: The specific date string (YYYY-MM-DD) to read for.
+        log_data: Logging data structure
+        
+    Returns:
+        Spark DataFrame or None if failed
+    """
+    try:
+        if source_type == 'inventory':
+            silver_path = S3_PATHS['silver_inventory']
+        elif source_type == 'pos':
+            silver_path = S3_PATHS['silver_pos']
+        else:
+            raise ValueError(f"Unsupported source_type: {source_type}")
+
+        log_message(log_data, "INFO", f"Reading {source_type} data for PROCESSING_DATE={current_processing_date_str} from Silver layer: {silver_path}")
+        
+        # Read only the partition for the current_processing_date_str
+        # Assumes S3 path is partitioned by processing_date like: s3://bucket/silver/inventory/processing_date=YYYY-MM-DD/
+        df = spark.read.parquet(f"{silver_path}processing_date={current_processing_date_str}/")
+        
+        row_count = df.count()
+        log_message(log_data, "INFO", f"Successfully read {row_count} rows from {source_type} Silver layer for processing_date={current_processing_date_str}")
+        
+        return df
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to read {source_type} Silver data for {current_processing_date_str}", str(e))
+        return None
