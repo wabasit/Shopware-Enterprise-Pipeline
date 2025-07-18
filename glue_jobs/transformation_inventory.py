@@ -281,3 +281,45 @@ def validate_data(df, source_type, log_data):
         log_message(log_data, "ERROR", f"Validation failed for {source_type}", str(e))
         # Return original DF with a generic error reason if validation setup itself fails
         return None, df.withColumn('error_reason', lit(f"Validation setup error: {str(e)}")), {'status': 'error', 'reason': str(e)}
+
+
+def transform_data(df, source_type, log_data):
+    """
+    Apply transformations to validated 'inventory' data.
+    
+    Args:
+        df: Spark DataFrame with valid data
+        source_type: 'inventory'
+        log_data: Logging data structure
+        
+    Returns:
+        Transformed DataFrame
+    """
+    try:
+        log_message(log_data, "INFO", f"Starting transformation for {source_type} data")
+        
+        # Convert 'last_updated' (Long epoch seconds) to TimestampType
+        df_transformed = df.withColumn('last_updated_timestamp',
+                                       from_unixtime(col('last_updated')).cast(TimestampType()))
+        
+        # Add derived columns specific to inventory
+        df_transformed = df_transformed \
+            .withColumn('stock_status',
+                        when(col('stock_level') == 0, 'OUT_OF_STOCK')
+                        .when(col('stock_level') < 10, 'LOW_STOCK')
+                        .otherwise('IN_STOCK')) \
+            .withColumn('processing_date', lit(PROCESSING_DATE)) # Add processing_date for partitioning
+        
+        # Add audit columns (using UTC for consistency)
+        df_transformed = df_transformed \
+            .withColumn('processed_timestamp_utc', lit(datetime.utcnow())) \
+            .withColumn('job_run_id', lit(RUN_TIMESTAMP))
+        
+        row_count = df_transformed.count()
+        log_message(log_data, "INFO", f"Transformation completed for {source_type}: {row_count} rows")
+        
+        return df_transformed
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Transformation failed for {source_type}", str(e))
+        return None
