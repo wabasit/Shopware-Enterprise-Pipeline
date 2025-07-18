@@ -361,3 +361,30 @@ def read_pos_data_from_catalog(log_data):
     except Exception as e:
         log_message(log_data, "ERROR", f"De-duplication failed for POS data", str(e))
         raise
+
+def write_pos_to_silver(df, log_data):
+    """
+    Write transformed POS data to Silver layer.
+    Uses 'append' mode to add new data to existing partitions.
+    
+    Args:
+        df: Transformed and deduplicated DataFrame
+        log_data: Logging data structure
+    """
+    try:
+        output_path = S3_PATHS['silver_pos']
+        
+        log_message(log_data, "INFO", f"Writing POS data to Silver layer base path: {output_path}")
+        
+        df.write \
+          .mode('append') \
+          .option('path', output_path) \
+          .partitionBy('processing_date') \
+          .format('parquet') \
+          .save()
+        
+        log_message(log_data, "INFO", f"Successfully wrote POS data to Silver layer for PROCESSING_DATE={PROCESSING_DATE}")
+        
+    except Exception as e:
+        log_message(log_data, "ERROR", f"Failed to write POS data to Silver layer", str(e))
+        raise
