@@ -39,3 +39,20 @@ def lambda_handler(event, context):
             # Prepare output path
             filename = os.path.basename(key)
             output_key = f"raw/batch/inventory-raw/{filename}"
+
+            # Convert to JSON Lines
+            jsonl_lines = [json.dumps(record) for record in data]
+            jsonl_content = "\n".join(jsonl_lines)
+
+            # Write converted file to target S3 location
+            s3.put_object(
+                Bucket=bucket,
+                Key=output_key,
+                Body=jsonl_content.encode('utf-8')
+            )
+
+            logger.info(f"Converted and saved: s3://{bucket}/{output_key}")
+
+    except Exception as e:
+        logger.error(f"Lambda failed: {e}")
+        raise
