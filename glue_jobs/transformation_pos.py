@@ -27,3 +27,7 @@ args = getResolvedOptions(sys.argv, [
     'start_processing_date', # Optional: for backfill range (format YYYY-MM-DD)
     'end_processing_date'    # Optional: for backfill range (format YYYY-MM-DD)
 ])
+
+# Configuration parameters
+BUCKET_NAME = args['BUCKET_NAME']
+DATABASE_NAME = args['DATABASE_NAME']
