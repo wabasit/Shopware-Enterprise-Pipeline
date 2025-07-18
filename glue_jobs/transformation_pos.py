@@ -47,3 +47,14 @@ S3_PATHS = {
     'archive': f's3://{BUCKET_NAME}/archive/', # Generic path for archive
     'logs': f's3://{BUCKET_NAME}/logs/validation/' # Generic path for logs
 }
+
+# Initialize job
+job.init(args['JOB_NAME'], args)
+
+# Initialize S3 client for archival operations
+s3_client = boto3.client('s3')
+
+# PROCESSING_DATE is now a global variable that will be set dynamically in main()
+# It needs an initial placeholder value for `setup_logging` when it's first called,
+# but it will be updated per iteration in `main()`.
+PROCESSING_DATE = current_utc_time.strftime('%Y-%m-%d')
