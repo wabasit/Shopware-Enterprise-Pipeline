@@ -14,3 +14,5 @@ DESTINATION_PREFIX = "raw/batch/pos-raw/"
 def lambda_handler(event, context):
     # Loop through each S3 event record
     for record in event['Records']:
+  # Extract the source S3 bucket name
+        source_bucket = record['s3']['bucket']['name']
