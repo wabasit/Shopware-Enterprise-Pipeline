@@ -23,24 +23,25 @@ job = Job(glueContext)
 all_expected_args = [
     'JOB_NAME',
     'BUCKET_NAME',
-    'DATABASE_NAME',
+    'DATABASE_NAME', # This is for Glue Catalog
     'REDSHIFT_CONNECTION',
-    'REDSHIFT_SCHEMA',
-    'REDSHIFT_PROCESSED_SCHEMA',
-    #'PROCESSING_DATE', # This will be the *current* date for daily runs, or the specific date for single-day backfill
+    'REDSHIFT_SCHEMA', # This is for KPI schema
+    'REDSHIFT_PROCESSED_SCHEMA', # This is for the source data schema in Redshift (still needed for KPI table DDL)
     'start_processing_date', # Optional: for backfill range (format YYYY-MM-DD)
     'end_processing_date',   # Optional: for backfill range (format YYYY-MM-DD)
-    'TempDir' # Required for Redshift writes
+    'TempDir', # Required for Redshift writes
+    'PROCESSING_DATE' # Added explicitly to all_expected_args for clarity, even if optional
 ]
 
 args = getResolvedOptions(sys.argv, all_expected_args)
 
 # Configuration parameters
 BUCKET_NAME = args['BUCKET_NAME']
-DATABASE_NAME = args['DATABASE_NAME']
+GLUE_CATALOG_DATABASE_NAME = args['DATABASE_NAME'] # Renamed for clarity
 REDSHIFT_CONNECTION = args['REDSHIFT_CONNECTION']
 REDSHIFT_KPI_SCHEMA = args['REDSHIFT_SCHEMA']
-REDSHIFT_PROCESSED_SCHEMA = args['REDSHIFT_PROCESSED_SCHEMA']
+REDSHIFT_PROCESSED_SCHEMA = args['REDSHIFT_PROCESSED_SCHEMA'] # Still used for KPI table DDL
+TEMP_DIR = args['TempDir']
 
 # --- AUTOMATIC GENERATION OF RUN_TIMESTAMP ---
 # Use UTC for consistency across AWS services
@@ -49,7 +50,7 @@ current_utc_time = datetime.utcnow()
 RUN_TIMESTAMP = current_utc_time.strftime('%Y%m%d_%H%M%S')
 # --- END AUTOMATIC GENERATION ---
 
-# S3 paths configuration
+# S3 paths configuration (for Silver layer, logs and errors)
 S3_PATHS = {
     'silver_inventory': f's3://{BUCKET_NAME}/processed/inventory/',
     'silver_pos': f's3://{BUCKET_NAME}/processed/pos/',
@@ -62,12 +63,6 @@ REDSHIFT_KPI_TABLES = {
     'sales_kpi': f'{REDSHIFT_KPI_SCHEMA}.sales_kpi_daily',
     'inventory_kpi': f'{REDSHIFT_KPI_SCHEMA}.inventory_kpi_daily',
     'regional_kpi': f'{REDSHIFT_KPI_SCHEMA}.regional_kpi_daily'
-}
-
-# Redshift processed source data table names (for Option 2, these are daily appends/upserts)
-REDSHIFT_PROCESSED_SOURCE_TABLES = {
-    'inventory': f'{REDSHIFT_PROCESSED_SCHEMA}.inventory_daily',
-    'pos': f'{REDSHIFT_PROCESSED_SCHEMA}.pos_daily'
 }
 
 # Initialize job
@@ -83,7 +78,7 @@ def setup_logging():
     log_data = {
         'job_name': args['JOB_NAME'],
         'run_timestamp': RUN_TIMESTAMP,
-        'processing_date': args.get('PROCESSING_DATE'), # Initial processing_date for the run
+        'processing_date': None, # This will be set dynamically in main()
         'logs': []
     }
     return log_data
@@ -106,6 +101,10 @@ def log_message(log_data, level, message, details=None):
     if details:
         log_entry['details'] = details
     
+    # Add current processing_date to log entry if available
+    if log_data.get('processing_date'):
+        log_entry['processing_date'] = log_data['processing_date']
+
     log_data['logs'].append(log_entry)
     print(f"[{level}] {message}")
 
@@ -118,7 +117,7 @@ def save_logs_to_s3(log_data):
     """
     try:
         log_path = f"{S3_PATHS['logs']}{RUN_TIMESTAMP}/kpi_logs.json"
-        log_json = json.dumps(log_data, indent=2)
+        log_json = json.dumps(log_data, indent=2, default=str) # Use default=str for datetime objects
         
         # Write to S3
         s3_client.put_object(
@@ -157,6 +156,9 @@ def read_silver_data(source_type, current_processing_date_str, log_data):
         # Assumes S3 path is partitioned by processing_date like: s3://bucket/silver/inventory/processing_date=YYYY-MM-DD/
         df = spark.read.parquet(f"{silver_path}processing_date={current_processing_date_str}/")
         
+        # No explicit cast here. Spark will infer the schema.
+        # The join_inventory_pos_data function will now directly use 'last_updated' as a TimestampType.
+
         row_count = df.count()
         log_message(log_data, "INFO", f"Successfully read {row_count} rows from {source_type} Silver layer for processing_date={current_processing_date_str}")
         
@@ -172,8 +174,8 @@ def join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, l
     This function expects data for a single processing date as defined by the current iteration.
 
     Args:
-        inventory_df: Inventory DataFrame
-        pos_df: POS DataFrame
+        inventory_df: Inventory DataFrame (read from Silver)
+        pos_df: POS DataFrame (read from Silver)
         current_processing_date_str: The specific date string (YYYY-MM-DD) for KPI calculation.
         log_data: Logging data structure
 
@@ -183,23 +185,29 @@ def join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, l
     try:
         log_message(log_data, "INFO", f"Starting inventory-POS data join with 2-hour time buckets for KPI calculation for date {current_processing_date_str}.")
 
+        # --- DEBUGGING: Log schemas of input DataFrames ---
+        log_message(log_data, "INFO", "Schema of inventory_df before join:", details=inventory_df._jdf.schema().treeString())
+        log_message(log_data, "INFO", "Schema of pos_df before join:", details=pos_df._jdf.schema().treeString())
+        # --- END DEBUGGING ---
+
         # Prepare inventory data with 2-hour time buckets
+        # Use 'last_updated' directly as it is confirmed to be TIMESTAMP in the input DataFrame schema.
         inventory_prep = inventory_df.withColumn(
             'time_bucket',
-            floor(hour(col('last_updated_timestamp')) / 2) * 2
+            floor(hour(col('last_updated')) / 2) * 2
         ).withColumn(
             'inv_date',
-            to_date(col('last_updated_timestamp'))
+            to_date(col('last_updated'))
         )
 
         # Prepare POS data with 2-hour time buckets
-        # --- FIX 1: Use 'timestamp_timestamp' instead of 'transaction_timestamp' ---
+        # Use 'transaction_timestamp' directly as it is already TIMESTAMP type
         pos_prep = pos_df.withColumn(
             'time_bucket',
-            floor(hour(col('timestamp_timestamp')) / 2) * 2
+            floor(hour(col('transaction_timestamp')) / 2) * 2
         ).withColumn(
             'pos_date',
-            to_date(col('timestamp_timestamp'))
+            to_date(col('transaction_timestamp'))
         )
 
         # Aggregate inventory data by product, date, and time bucket (latest stock level)
@@ -208,20 +216,18 @@ def join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, l
                 last('stock_level', True).alias('stock_level'),
                 last('stock_status', True).alias('stock_status'),
                 last('warehouse_id', True).alias('warehouse_id'),
-                max('last_updated_timestamp').alias('inv_timestamp')
+                max('last_updated').alias('inv_timestamp') # Use 'last_updated' directly
             )
 
         # Aggregate POS data by product, date, and time bucket
         pos_agg = pos_prep.groupBy('product_id', 'pos_date', 'time_bucket') \
             .agg(
                 sum('quantity').alias('total_quantity'),
-                # --- FIX 2: Use 'revenue' instead of 'net_revenue' ---
                 sum('revenue').alias('total_revenue'),
-                # --- FIX 3: Use 'discount_applied' instead of 'discount_amount' ---
                 sum('discount_applied').alias('total_discount'),
                 count('transaction_id').alias('transaction_count'),
                 collect_set('store_id').alias('store_list'),
-                max('timestamp_timestamp').alias('pos_timestamp') # Also ensure this uses the correct column
+                max('transaction_timestamp').alias('pos_timestamp')
             )
 
         # The rest of your join logic remains the same
@@ -356,7 +362,7 @@ def compute_inventory_kpis(joined_df, current_processing_date_str, log_data):
         # Ensure NOT NULL columns are indeed not null (analysis_date, warehouse_id, processing_date)
         inventory_kpis = inventory_kpis.filter(
             col('analysis_date').isNotNull() &
-            col('warehouse_id').isNotNull() &
+            col('warehouse_id').isNotNull() & # Corrected from warehouse_date to warehouse_id
             col('processing_date').isNotNull()
         )
 
@@ -432,10 +438,10 @@ def write_to_redshift(df, table_name, current_processing_date_str, log_data):
             frame=df_dynamic,
             catalog_connection=REDSHIFT_CONNECTION,
             connection_options={
-                # CHANGED: Delete only by analysis_date for robustness with internal RUN_TIMESTAMP
+                # Delete by analysis_date to handle re-runs (upsert logic)
                 "preactions": f"DELETE FROM {table_name} WHERE analysis_date = '{current_processing_date_str}';",
                 "dbtable": table_name,
-                "database": "dev"  # IMPORTANT: Update with your actual Redshift database name
+                "database": "dev" # Use the actual Redshift database name
             },
             redshift_tmp_dir=args["TempDir"], 
             transformation_ctx=f"write_redshift_kpi_{table_name.split('.')[-1]}_{current_processing_date_str}"
@@ -446,47 +452,6 @@ def write_to_redshift(df, table_name, current_processing_date_str, log_data):
         
     except Exception as e:
         log_message(log_data, "ERROR", f"Failed to write to Redshift KPI table {table_name} for date {current_processing_date_str}", str(e))
-        raise
-
-def write_processed_data_to_redshift(df, table_name, current_processing_date_str, log_data, source_type):
-    """
-    Writes processed Silver layer data (inventory or POS for a specific processing_date) 
-    to Redshift for historical record. Uses upsert logic.
-
-    Args:
-        df (DataFrame): The Spark DataFrame to write.
-        table_name (str): The target Redshift table name.
-        current_processing_date_str (str): The specific date string (YYYY-MM-DD) for which data is being written.
-        log_data (dict): Dictionary for structured logging.
-        source_type (str): 'inventory' or 'pos' for logging clarity.
-    """
-    try:
-        log_message(log_data, "INFO", f"Writing processed {source_type} data for {current_processing_date_str} to Redshift table: {table_name}.")
-
-        df_with_metadata = df \
-            .withColumn('job_run_id', lit(RUN_TIMESTAMP)) \
-            .withColumn('redshift_load_timestamp', current_timestamp())
-
-        df_dynamic = DynamicFrame.fromDF(df_with_metadata, glueContext, f"df_dynamic_{source_type}_processed_redshift_{current_processing_date_str}")
-
-        glueContext.write_dynamic_frame.from_jdbc_conf(
-            frame=df_dynamic,
-            catalog_connection=REDSHIFT_CONNECTION,
-            connection_options={
-                # CHANGED: Delete only by processing_date for robustness with internal RUN_TIMESTAMP
-                "preactions": f"DELETE FROM {table_name} WHERE processing_date = '{current_processing_date_str}';",
-                "dbtable": table_name,
-                "database": "dev"
-            },
-            redshift_tmp_dir=args["TempDir"],
-            transformation_ctx=f"write_redshift_processed_{source_type}_{current_processing_date_str}"
-        )
-
-        row_count = df.count()
-        log_message(log_data, "INFO", f"Successfully wrote {row_count} rows of processed {source_type} data to {table_name} for {current_processing_date_str}")
-
-    except Exception as e:
-        log_message(log_data, "ERROR", f"Failed to write processed {source_type} data to Redshift table {table_name} for {current_processing_date_str}", str(e))
         raise
 
 def write_errors_to_s3(df, error_type, current_processing_date_str, log_data):
@@ -568,55 +533,59 @@ def main():
     log_mode = "Unknown"
 
     try:
-        start_date_str = args.get('start_processing_date')
-        end_date_str = args.get('end_processing_date')
-        
-        if start_date_str and end_date_str:
+        start_date_param = args.get('start_processing_date')
+        end_date_param = args.get('end_processing_date')
+        processing_date_param = args.get('PROCESSING_DATE') # Get the single processing date argument
+
+        if start_date_param and end_date_param:
             # Backfill mode: use the provided date range
-            start_processing_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-            end_processing_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            # Ensure start_date is not after end_date
-            if start_processing_date > end_processing_date:
-                raise ValueError("start_processing_date cannot be after end_processing_date.")
-            
-            delta = timedelta(days=1)
-            while start_processing_date <= end_processing_date:
-                processing_dates.append(start_processing_date.strftime('%Y-%m-%d'))
-                start_processing_date += delta
-            
-            log_mode = "Backfill"
-            log_message(log_data, "INFO", f"Job running in Backfill mode for dates from {start_date_str} to {end_date_str}")
-        elif args.get('PROCESSING_DATE'):
+            try:
+                start_date = datetime.strptime(start_date_param, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_param, '%Y-%m-%d').date()
+                # Ensure start_date is not after end_date
+                if start_date > end_date:
+                    raise ValueError("start_processing_date cannot be after end_processing_date.")
+                
+                delta = timedelta(days=1)
+                current_date_iter = start_date # Initialize current_date_iter
+                while current_date_iter <= end_date:
+                    processing_dates.append(current_date_iter.strftime('%Y-%m-%d'))
+                    current_date_iter += timedelta(days=1)
+                
+                log_mode = "Backfill"
+                log_message(log_data, "INFO", f"Job running in Backfill mode for dates from {start_date_param} to {end_date_param}")
+            except ValueError as e:
+                log_message(log_data, "ERROR", f"Invalid date format for --start_processing_date or --end_processing_date. Expected YYYY-MM-DD. Aborting.", str(e))
+                raise Exception("Date parsing error.")
+        elif processing_date_param:
             # Daily run mode: process only the single specified PROCESSING_DATE
-            processing_dates = [args['PROCESSING_DATE']]
+            processing_dates = [processing_date_param]
             log_mode = "Daily"
-            log_message(log_data, "INFO", f"Job running in Daily mode for date {args['PROCESSING_DATE']}")
+            log_message(log_data, "INFO", f"Job running in Daily mode for date {processing_date_param}")
         else:
-            raise ValueError("Either 'PROCESSING_DATE' or 'start_processing_date' and 'end_processing_date' must be provided.")
+            # Default to current UTC date if no specific date or range is provided
+            default_date = current_utc_time.strftime('%Y-%m-%d')
+            processing_dates.append(default_date)
+            log_mode = "Continuous/Default Daily"
+            log_message(log_data, "INFO", f"No specific processing date or range provided. Defaulting to current UTC date: {default_date}")
+
 
         log_message(log_data, "INFO", f"Starting KPI Computation & Redshift Load job ({log_mode} mode)")
         
         for current_processing_date_str in processing_dates:
+            # Update the processing_date in log_data for the current iteration
+            log_data['processing_date'] = current_processing_date_str
+
             log_message(log_data, "INFO", f"--- Processing date: {current_processing_date_str} ---")
             
-            # Read Silver layer data for the current processing date
+            # Read data from S3 Silver layer
             inventory_df = read_silver_data('inventory', current_processing_date_str, log_data)
             pos_df = read_silver_data('pos', current_processing_date_str, log_data)
             
             if inventory_df is None or pos_df is None or inventory_df.count() == 0 or pos_df.count() == 0:
-                log_message(log_data, "WARN", f"Skipping processing for {current_processing_date_str} due to missing or empty Silver layer data.")
+                log_message(log_data, "WARN", f"Skipping KPI computation for {current_processing_date_str} due to missing or empty Silver layer data.")
                 overall_status = "PARTIAL_FAILURE"
                 continue # Move to the next date in the backfill range
-
-            # Write individual processed (filtered Silver) data to the new schema
-            try:
-                write_processed_data_to_redshift(inventory_df, REDSHIFT_PROCESSED_SOURCE_TABLES['inventory'], current_processing_date_str, log_data, 'inventory')
-                write_processed_data_to_redshift(pos_df, REDSHIFT_PROCESSED_SOURCE_TABLES['pos'], current_processing_date_str, log_data, 'pos')
-                log_message(log_data, "INFO", f"Successfully wrote individual inventory and POS data for {current_processing_date_str} to processed schema.")
-            except Exception as e:
-                log_message(log_data, "ERROR", f"Failed to write individual processed data for {current_processing_date_str} to Redshift: {str(e)}")
-                overall_status = "PARTIAL_FAILURE"
-                continue # Move to the next date, even if this step failed
 
             # Join inventory and POS data for KPI computation
             joined_df, failed_joins_df = join_inventory_pos_data(inventory_df, pos_df, current_processing_date_str, log_data)
@@ -693,12 +662,13 @@ def main():
         raise # Re-raise to mark the Glue job as failed in the console
     
     finally:
-        # Save logs to S3
+        # Always attempt to save logs to S3, regardless of job success or failure
         save_logs_to_s3(log_data)
         
-        # Commit the job
+        # Commit the Glue job. This is crucial for Glue to mark the job as succeeded.
+        # If an exception is re-raised before this, the job will be marked as failed.
         job.commit()
 
-# Execute main function
+# Execute the main function when the script runs
 if __name__ == "__main__":
     main()
