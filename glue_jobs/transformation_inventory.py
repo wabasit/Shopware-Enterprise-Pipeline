@@ -152,7 +152,7 @@ def get_schema_for_source(source_type):
                 StructField('warehouse_id', IntegerType(), False),
                 StructField('stock_level', IntegerType(), False),
                 StructField('restock_threshold', IntegerType(), True), # Nullable
-                StructField('last_updated', LongType(), False) # Changed to LongType for epoch seconds
+                StructField('last_updated', DoubleType(), False) # CHANGED: From LongType to DoubleType
             ]),
             'validation_rules': {
                 'stock_level': lambda col: col >= 0, # Stock level must be non-negative
@@ -171,7 +171,7 @@ def read_data_from_catalog(source_type, log_data):
     Args:
         source_type: 'inventory'
         log_data: Logging data structure
-
+        
     Returns:
         Spark DataFrame or None if failed
     """
@@ -182,7 +182,7 @@ def read_data_from_catalog(source_type, log_data):
 
         # Create dynamic frame from catalog
         dynamic_frame = glueContext.create_dynamic_frame.from_catalog(
-            database=GLUE_CATALOG_DATABASE_NAME, # Updated: Use specific Glue Catalog DB name
+            database=GLUE_CATALOG_DATABASE_NAME,
             table_name=table_name,
             transformation_ctx=f"read_{source_type}"
         )
@@ -313,9 +313,10 @@ def transform_data(df, source_type, log_data):
     try:
         log_message(log_data, "INFO", f"Starting transformation for {source_type} data")
 
-        # Convert 'last_updated' (Long epoch seconds) to TimestampType
+        # Convert 'last_updated' (Double epoch seconds) to TimestampType
+        # Explicitly cast to LongType before from_unixtime to handle fractional seconds (truncates them)
         df_transformed = df.withColumn('last_updated_timestamp',
-                                       from_unixtime(col('last_updated')).cast(TimestampType()))
+                                       from_unixtime(col('last_updated').cast(LongType())).cast(TimestampType()))
 
         # Add derived columns specific to inventory
         df_transformed = df_transformed \
