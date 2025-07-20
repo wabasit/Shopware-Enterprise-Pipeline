@@ -1,61 +1,63 @@
-# Import necessary libraries
 import json
 import boto3
 import urllib.parse
+import datetime
 
-
-# Initialize the S3 client
 s3 = boto3.client('s3')
-
-# Define the destination prefix where CSV files should be moved
 DESTINATION_PREFIX = "raw/batch/pos-raw/"
 
-
 def lambda_handler(event, context):
-    # Loop through each S3 event record
-    for record in event['Records']:
-  # Extract the source S3 bucket name
-        source_bucket = record['s3']['bucket']['name']
+    try:
+        # Extract values from input
+        source_bucket = event['bucket']
+        source_key = urllib.parse.unquote_plus(event['key'])
+        destination_prefix = event.get('target_prefix', DESTINATION_PREFIX)
+        processing_date = event.get('processing_date', str(datetime.date.today()))
+        execution_name = event.get('execution_name', 'unknown_execution')
 
-         # Extract the object key (file path) and decode it in case it contains special characters
-        source_key = urllib.parse.unquote_plus(record['s3']['object']['key'])
-
-# Skip processing if the file is not a CSV
+        # Skip if not a CSV
         if not source_key.lower().endswith('.csv'):
             print(f"Skipped non-CSV file: {source_key}")
-            continue
+            return {
+                "status": "skipped",
+                "output_location": None,
+                "records_copied": 0,
+                "processing_date": processing_date,
+                "run_timestamp": datetime.datetime.utcnow().isoformat()
+            }
 
-          # Prevent processing files already in the destination path to avoid infinite loops
-        if source_key.startswith(DESTINATION_PREFIX):
-            print(f"File already in destination folder, skipping: {source_key}")
-            continue
+        # Skip if already in destination
+        if source_key.startswith(destination_prefix):
+            print(f"File already in destination: {source_key}")
+            return {
+                "status": "already_in_destination",
+                "output_location": source_key,
+                "records_copied": 0,
+                "processing_date": processing_date,
+                "run_timestamp": datetime.datetime.utcnow().isoformat()
+            }
 
-         # Extract the filename from the full key/path
         filename = source_key.split('/')[-1]
+        destination_key = f"{destination_prefix}{filename}"
 
-         # Define the new destination key (path) where the file will be copied
-        destination_key = f"{DESTINATION_PREFIX}{filename}"
+        print(f"Copying {source_key} to {destination_key}...")
 
-        try:
-            # Log the copy action
-            print(f"Copying {source_key} to {destination_key}...")
-            
-            # Copy the file from the original location to the destination path within the same bucket
-            s3.copy_object(
-                Bucket=source_bucket,
-                CopySource={'Bucket': source_bucket, 'Key': source_key},
-                Key=destination_key
-            )
+        s3.copy_object(
+            Bucket=source_bucket,
+            CopySource={'Bucket': source_bucket, 'Key': source_key},
+            Key=destination_key
+        )
 
-             # Log success message
-            print(f"Successfully copied to {destination_key}")
-        except Exception as e:
-            # Log and raise any errors that occur during the copy operation
-            print(f"Error copying file: {e}")
-            raise e
-        
-         # Return a success response
-    return {
-        'statusCode': 200,
-        'body': json.dumps('Processing complete.')
-    }
+        print(f"Successfully copied to {destination_key}")
+        return {
+            "status": "success",
+            "output_location": destination_key,
+            "records_copied": 1,
+            "processing_date": processing_date,
+            "run_timestamp": datetime.datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise
+
