@@ -37,6 +37,6 @@ def fetch_data(api_url):
             DeliveryStreamName=stream_name,
             Record={'Data': json.dumps(data) + '\n'}
         )
-        print(f"✅ Sent to Firehose: {stream_name}")
+        print(f" Sent to Firehose: {stream_name}")
     except Exception as e:
         print(f" Firehose failed ({stream_name}): {e}")
