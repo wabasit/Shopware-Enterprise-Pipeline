@@ -28,7 +28,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: "${{ secrets.AWS_REGION }}"
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Validate Python Scripts
         run: |
@@ -43,12 +43,13 @@ jobs:
 
       - name: Deploy Lambda Function
         run: |
+          zip -j lambda_function.zip infra/lambda_functions/json_converter/lambda_function.py
           aws lambda update-function-code \
             --function-name arn:aws:lambda:eu-north-1:771826808190:function:json_converter \
-            --zip-file fileb://<(zip -j lambda_function.zip infra/lambda_functions/json_converter/lambda_function.py) \
+            --zip-file fileb://lambda_function.zip \
             --region ${{ secrets.AWS_REGION }} || exit 1
 
-            
+
     #   - name: Upload Scripts to S3
     #     run: |
     #       aws s3 cp compute_kpi_Redshift.py s3://shopware-bucket-g3/scripts/compute_kpi_Redshift.py
