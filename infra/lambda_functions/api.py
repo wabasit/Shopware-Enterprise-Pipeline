@@ -167,7 +167,7 @@ def lambda_handler(event, context):
     crm_data = fetch_data(crm_api_url)
     
     if crm_data:
-        logger.info("CRM data fetched. Archiving and cleaning.")
+        logger.info("CRM data fetched.. Archiving and cleaning.")
         archive_raw(crm_data, 'crm')
         clean_crm_data = clean_crm(crm_data)
         if clean_crm_data:
