@@ -93,7 +93,7 @@ def clean_weblog(payload):
 # === MAIN ===
 
 def lambda_handler(event, context):
-    print("🚀 Starting unified API poller")
+    print(" Starting unified API poller")
 
     # === CRM ===
     crm_data = fetch_data("http://3.248.199.26:8000/api/customer-interaction/")
