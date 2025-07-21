@@ -180,7 +180,7 @@ def lambda_handler(event, context):
 
     # Web Logs Data Polling and Processing
     weblog_api_url = "http://3.248.199.26:8000/api/web-traffic/"
-    logger.info(f"Initiating web log data polling from: {weblog_api_url}")
+    logger.info(f"Initiating web log data polling, from: {weblog_api_url}")
     weblog_data = fetch_data(weblog_api_url)
     
     if weblog_data:
