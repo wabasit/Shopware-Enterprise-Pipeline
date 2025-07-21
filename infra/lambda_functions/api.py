@@ -13,7 +13,7 @@ FIREHOSE_MAP = {
     'web-logs': 'weblogs-firehose'
 }
 
-# === HELPERS ===
+# === HELPERS ==
 
 def safe_int(val):
     try:
