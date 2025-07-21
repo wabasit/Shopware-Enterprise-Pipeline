@@ -1,0 +1,57 @@
+name: CI/CD Pipeline for AWS Glue and Lambda
+
+on:
+  push:
+    branches:
+      - feature/batch_hourly
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install AWS CLI and dependencies
+        run: |
+          pip install awscli
+          pip install boto3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Validate Python Scripts
+        run: |
+          python -m py_compile glue_jobs/compute_kpi_Redshift.py
+          python -m py_compile glue_jobs/transformation_inventory.py
+          python -m py_compile infra/lambda_functions/json_converter/lambda_function.py
+
+      - name: Deploy Glue Scripts
+        run: |
+          aws s3 cp glue_jobs/compute_kpi_Redshift.py s3://shopware-bucket-g3/glue_scripts/compute_kpi_Redshift.py || exit 1
+          aws s3 cp glue_jobs/transformation_inventory.py s3://shopware-bucket-g3/glue_scripts/transformation_inventory.py || exit 1
+
+      - name: Deploy Lambda Function
+        run: |
+          zip -j lambda_function.zip infra/lambda_functions/json_converter/lambda_function.py
+          aws lambda update-function-code \
+            --function-name arn:aws:lambda:eu-north-1:771826808190:function:json_converter \
+            --zip-file fileb://lambda_function.zip \
+            --region ${{ secrets.AWS_REGION }} || exit 1
+
+
+    #   - name: Upload Scripts to S3
+    #     run: |
+    #       aws s3 cp compute_kpi_Redshift.py s3://shopware-bucket-g3/scripts/compute_kpi_Redshift.py
+    #       aws s3 cp transformation_inventory.py s3://shopware-bucket-g3/scripts/transformation_inventory.py
+    #       aws s3 cp lambda_function.py s3://shopware-bucket-g3/lambda/lambda_function.py
