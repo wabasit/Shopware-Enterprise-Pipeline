@@ -11,6 +11,8 @@ The pipeline ensures that data is partitioned, compressed, and efficiently queri
 
 ## Architecture Summary
 
+![alt text](misc/Architecture1.png)
+
 ### Data Flow:
 
 1. **Web Events** generated from users (real or synthetic) are streamed into **Kinesis Data Firehose**.
