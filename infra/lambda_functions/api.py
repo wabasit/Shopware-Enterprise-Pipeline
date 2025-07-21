@@ -23,7 +23,7 @@ def fetch_data(api_url):
     try:
         response = requests.get(api_url, timeout=5)
         if response.status_code >= 500:
-            print(f"🚨 Server error from {api_url}: {response.status_code}")
+            print(f" Server error from {api_url}: {response.status_code}")
             return None
         response.raise_for_status()
         return response.json()
