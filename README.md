@@ -1,2 +1,206 @@
 # Shopware-Enterprise-Pipeline
 Shopware is a modern retail company seeking to enhance its data infrastructure by consolidating  and processing information from diverse sources.
+
+## Project Overview
+
+This project demonstrates a streaming ETL (Extract, Transform, Load) data pipeline that ingests web log events through AWS Kinesis Data Firehose and stores them in Amazon Redshift. The data is delivered in JSON format and landed in an S3 bucket, from where Redshift loads it using the COPY command with a manifest file and JSONPaths for mapping.
+
+The pipeline ensures that data is partitioned, compressed, and efficiently queried using Redshift Spectrum and Delta Lake best practices.
+
+---
+
+## Architecture Summary
+
+### Data Flow:
+
+1. **Web Events** generated from users (real or synthetic) are streamed into **Kinesis Data Firehose**.
+2. Firehose delivers JSON files to **Amazon S3**, partitioned by date and time.
+3. **Redshift COPY command** loads the S3 files using a **manifest file** and a **JSONPaths file**.
+4. Data is inserted into the `web_logs_stream` table in **Amazon Redshift**.
+5. Invalid records (e.g., missing fields) are pushed to an **S3 `invalid` folder** for analysis.
+
+---
+
+## Redshift Table Definition
+
+The Redshift target table for this project is:
+
+```sql
+CREATE TABLE shopware_stream.web_logs_stream (
+    event_type VARCHAR(255),
+    browser VARCHAR(255),
+    device_type VARCHAR(255),
+    page VARCHAR(255),
+    user_id VARCHAR(255),
+    session_id VARCHAR(255),
+    ingestion_timestamp TIMESTAMP,
+    event_timestamp FLOAT
+);
+```
+```sql
+CREATE TABLE dev.shopware_stream.customer_interaction_stream (
+    customer_id          INT,
+    interaction_type     VARCHAR(50),
+    channel              VARCHAR(50),
+    rating               INT,
+    message_excerpt      VARCHAR(255),
+    event_timestamp      TIMESTAMP,
+    ingestion_timestamp  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+---
+
+## COPY Command Explained
+
+```sql
+COPY shopware_stream.web_logs_stream (
+    event_type, browser, device_type, page,
+    user_id, session_id, ingestion_timestamp, event_timestamp
+)
+FROM 's3://shopware-bucket-g3/<manifest>'
+CREDENTIALS 'aws_iam_role=arn:aws:iam::<aws-account-id>:role/<role-name>'
+MANIFEST
+FORMAT AS JSON 's3://shopware-bucket-g3/firehose/json-filepaths/weblogs_jsonpaths.json'
+TIMEFORMAT 'auto'
+TRUNCATECOLUMNS;
+```
+
+### COPY Command Parameters
+
+| Parameter           | Description                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------- |
+| `FROM`              | Specifies the location of the manifest file that lists S3 objects to be loaded.                 |
+| `CREDENTIALS`       | Grants Redshift permission to access the S3 bucket using an IAM role.                           |
+| `MANIFEST`          | Indicates that the `FROM` path is a JSON manifest file that includes metadata and S3 file URLs. |
+| `FORMAT AS JSON`    | Uses a JSONPaths file to map JSON fields into Redshift columns.                                 |
+| `TIMEFORMAT 'auto'` | Automatically parses timestamp formats.                                                         |
+| `TRUNCATECOLUMNS`   | Prevents load errors by truncating data that exceeds column width.                              |
+
+---
+
+## JSONPaths File
+
+Located at:
+`s3://shopware-bucket-g3/firehose/json-filepaths/weblogs_jsonpaths.json`
+
+### Sample Content:
+
+```json
+{
+  "jsonpaths": [
+    "$.payload.event_type",
+    "$.payload.browser",
+    "$.payload.device_type",
+    "$.payload.page",
+    "$.payload.user_id",
+    "$.payload.session_id",
+    "$.timestamp",
+    "$.payload.timestamp"
+  ]
+}
+```
+
+This file tells Redshift how to extract values from nested JSON into respective table columns.
+
+---
+
+## Sample Manifest File
+
+Located in the Firehose delivery S3 path:
+
+```json
+{
+  "entries": [
+    {
+      "url": "s3://shopware-bucket-g3/firehose/web_redshift/2025/07/20/10/weblogs-firehose-5-2025-07-20-10-39-39-xxx",
+      "mandatory": true
+    },
+    ...
+  ]
+}
+```
+
+---
+
+## Common Issues
+
+### Problem
+
+Records do not appear in Redshift after the COPY command.
+
+### Root Cause
+
+Some JSON files in the manifest may contain null values for required fields like `user_id`, `session_id`, or `event_type`. These records are considered malformed and routed to the `invalid` folder in S3.
+
+### Example Invalid Record:
+
+```json
+{
+  "source": null,
+  "timestamp": 1752784836.0465686,
+  "session_id": null,
+  "user_id": null,
+  "page": null,
+  "device_type": null,
+  "browser": null,
+  "event_type": null,
+  "ingestion_timestamp": "2025-07-17T20:40:36.066373"
+}
+```
+
+---
+
+## Best Practices Followed
+
+* **Partitioned Delivery**: Firehose delivers files in time-based partitions for scalable querying.
+* **Parquet Format**: Optionally switch to Parquet with Delta Lake for efficient columnar storage.
+* **Manifest Usage**: Ensures exactly-once delivery by explicitly listing files.
+* **Error Logging**: Invalid records routed to a separate S3 path.
+* **IAM Role Separation**: Redshift COPY only allowed using IAM role with scoped access.
+* **Decoupled JSONPaths**: Easy mapping and schema evolution.
+
+---
+
+## Verification Queries
+
+Check tables loaded:
+
+```sql
+SELECT table_schema, table_name FROM svv_all_tables WHERE table_schema = 'shopware_stream';
+```
+
+View sample rows:
+
+```sql
+SELECT * FROM shopware_stream.web_logs_stream LIMIT 10;
+```
+![alt text](misc/weblogs.png)
+---
+## Dashboard
+**Customer Interaction Dashboad**
+![alt text](<misc/Customer-Interaction-Dashboard .png>)
+**Customer Interaction Table**
+![alt text](misc/Shopware-Inventory_daily.png)
+**Inventory KPIs Table**
+![alt text](misc/Shopware-Inventory-KPI.png)
+**POS Daily Table**
+![alt text](misc/shopware-POS_daily.png)
+**Regional KPIs Table**
+![alt text](misc/Shopware-Regional-KPI.png)
+**Sales KPIs Table**
+![alt text](misc/Shopware-Sales-KPI.png)
+**Step Function**
+![alt text](misc/Shopware-StepFunction.png)
+**Web Logs Stream Dashboad**
+![alt text](misc/Web-Logs-Dashboard.png)
+
+## How to Run the Pipeline End-to-End
+
+1. **Ensure Firehose is streaming valid data to S3.**
+2. **Confirm manifest file path in S3.**
+3. **Upload valid JSONPaths file to S3.**
+4. **Run the Redshift COPY command with the correct IAM role and manifest path.**
+5. **Check Redshift table for inserted records.**
+6. **Inspect S3 `invalid` folder for failed records.**
+
+---
