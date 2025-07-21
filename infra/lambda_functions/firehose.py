@@ -105,5 +105,5 @@ def convert_ts(val):
         ts = float(val) # Assume epoch float if not ISO string
         return datetime.utcfromtimestamp(ts).isoformat()
     except Exception as e:
-        logger.warning(f"Invalid timestamp '{val}' – defaulting to None. Error: {e}")
+        logger.warning(f"Invalid timestamp. '{val}' – defaulting to None. Error: {e}")
         return None
