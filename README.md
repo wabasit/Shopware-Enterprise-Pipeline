@@ -11,7 +11,7 @@ The pipeline ensures that data is partitioned, compressed, and efficiently queri
 
 ## Architecture Summary
 
-![alt text](misc/Architecture1.png)
+![alt text](misc/Project-Architecture.drawio.png)
 
 ### Data Flow:
 
