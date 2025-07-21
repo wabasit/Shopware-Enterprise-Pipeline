@@ -1,0 +1,829 @@
+{
+    "Comment": "Shopware Unified data pipeline: handles POS CSV or Inventory JSON, and triggers KPI computation after both data types are ready for a given date.",
+    "StartAt": "InitializePipelineMetadata",
+    "States": {
+      "InitializePipelineMetadata": {
+        "Type": "Pass",
+        "Comment": "Extract key metadata (data_type, file_extension, processing_date) from S3 event.",
+        "Parameters": {
+          "pipeline_start_time.$": "$$.State.EnteredTime",
+          "execution_name.$": "$$.Execution.Name",
+          "bucket.$": "$.detail.bucket.name",
+          "key.$": "$.detail.object.key",
+          "data_type.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 0)",
+          "file_extension.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '.'), States.MathAdd(States.ArrayLength(States.StringSplit($.detail.object.key, '.')), -1))",
+          "processing_date.$": "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1), '_'), 0)"
+        },
+        "ResultPath": "$.pipeline_metadata",
+        "Next": "RouteByDataType"
+      },
+      "RouteByDataType": {
+        "Type": "Choice",
+        "Comment": "Route execution based on the data type and file extension.",
+        "Choices": [
+          {
+            "And": [
+              {
+                "Variable": "$.pipeline_metadata.data_type",
+                "StringEquals": "pos"
+              },
+              {
+                "Variable": "$.pipeline_metadata.file_extension",
+                "StringEquals": "csv"
+              }
+            ],
+            "Next": "PosCsvBranch"
+          },
+          {
+            "And": [
+              {
+                "Variable": "$.pipeline_metadata.data_type",
+                "StringEquals": "inventory"
+              },
+              {
+                "Variable": "$.pipeline_metadata.file_extension",
+                "StringEquals": "json"
+              }
+            ],
+            "Next": "InventoryJsonBranch"
+          }
+        ],
+        "Default": "NotifyInvalidInput"
+      },
+      "NotifyInvalidInput": {
+        "Type": "Task",
+        "Comment": "Send failure notification for unsupported data type or file format.",
+        "Resource": "arn:aws:states:::sns:publish",
+        "Parameters": {
+          "TopicArn": "arn:aws:sns:eu-north-1:771826808190:shopware-pipeline-failure",
+          "Message": {
+            "pipeline_status": "FAILED",
+            "execution_name.$": "$$.Execution.Name",
+            "failure_time.$": "$$.State.EnteredTime",
+            "error_details.$": "States.Format('Unsupported data type or file format. Data Type: {}, File Extension: {}', $.pipeline_metadata.data_type, $.pipeline_metadata.file_extension)",
+            "failed_state": "RouteByDataType",
+            "input_key.$": "$.detail.object.key"
+          },
+          "MessageAttributes": {
+            "Status": {
+              "DataType": "String",
+              "StringValue": "FAILED"
+            },
+            "FailedState": {
+              "DataType": "String",
+              "StringValue": "RouteByDataType"
+            },
+            "Priority": {
+              "DataType": "String",
+              "StringValue": "HIGH"
+            }
+          },
+          "Subject": "Shopware Unified Pipeline Failure: Invalid Input"
+        },
+        "End": true
+      },
+      "PosCsvBranch": {
+        "Type": "Task",
+        "Comment": "Copy POS CSV to raw folder for CSVs using Lambda.",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "arn:aws:lambda:eu-north-1:771826808190:function:CopyPOSCsvToRawFolder",
+          "Payload": {
+            "bucket.$": "$.pipeline_metadata.bucket",
+            "key.$": "$.pipeline_metadata.key",
+            "target_prefix": "raw/batch/pos-raw/",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "execution_name.$": "$.pipeline_metadata.execution_name"
+          }
+        },
+        "ResultSelector": {
+          "status.$": "$.Payload.status",
+          "output_location.$": "$.Payload.output_location",
+          "records_copied.$": "$.Payload.records_copied",
+          "processing_date.$": "$.Payload.processing_date",
+          "run_timestamp.$": "$.Payload.run_timestamp"
+        },
+        "ResultPath": "$.pos_converter_result",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException",
+              "Lambda.TooManyRequestsException"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2.5
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyPosFailure"
+          }
+        ],
+        "Next": "StartPosCsvCrawler"
+      },
+      "StartPosCsvCrawler": {
+        "Type": "Task",
+        "Comment": "Start Glue crawler for POS raw CSV data.",
+        "Resource": "arn:aws:states:::aws-sdk:glue:startCrawler",
+        "Parameters": {
+          "Name": "pos_crawler"
+        },
+        "ResultPath": "$.pos_crawler_start",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 10,
+            "MaxAttempts": 2,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyPosFailure"
+          }
+        ],
+        "Next": "WaitForPosCsvCrawlerCompletion"
+      },
+      "WaitForPosCsvCrawlerCompletion": {
+        "Type": "Wait",
+        "Comment": "Wait before checking POS CSV crawler status.",
+        "Seconds": 30,
+        "Next": "CheckPosCsvCrawlerStatus"
+      },
+      "CheckPosCsvCrawlerStatus": {
+        "Type": "Task",
+        "Comment": "Check POS CSV crawler status until READY.",
+        "Resource": "arn:aws:states:::aws-sdk:glue:getCrawler",
+        "Parameters": {
+          "Name": "pos_crawler"
+        },
+        "ResultSelector": {
+          "crawler_state.$": "$.Crawler.State"
+        },
+        "ResultPath": "$.pos_crawler_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyPosFailure"
+          }
+        ],
+        "Next": "EvaluatePosCsvCrawlerStatus"
+      },
+      "EvaluatePosCsvCrawlerStatus": {
+        "Type": "Choice",
+        "Comment": "Loop to wait for POS CSV crawler completion.",
+        "Choices": [
+          {
+            "Variable": "$.pos_crawler_status.crawler_state",
+            "StringEquals": "READY",
+            "Next": "RunPosCsvTransformation"
+          }
+        ],
+        "Default": "WaitForPosCsvCrawlerCompletion"
+      },
+      "RunPosCsvTransformation": {
+        "Type": "Task",
+        "Comment": "Transform POS CSV data and load to Redshift using Glue job.",
+        "Resource": "arn:aws:states:::glue:startJobRun.sync",
+        "Parameters": {
+          "JobName": "transformation_pos",
+          "Arguments": {
+            "--SOURCE_TYPE": "pos_csv",
+            "--SOURCE_S3_PATH": "s3://shopware-bucket-g3/raw/batch/pos-raw/",
+            "--TARGET_S3_PATH": "s3://shopware-bucket-g3/processed/pos/",
+            "--PROCESSING_DATE.$": "$.pipeline_metadata.processing_date",
+            "--RUN_TIMESTAMP.$": "$.pipeline_metadata.pipeline_start_time",
+            "--REDSHIFT_PROCESSED_SCHEMA": "shopware_processed",
+            "--REDSHIFT_PROCESSED_TABLES": "{\"pos_csv\":\"pos_daily\"}",
+            "--REDSHIFT_TEMP_DIR": "s3://shopware-bucket-g3/TemporaryDir/",
+            "--REDSHIFT_CONNECTION": "Redshift_connection",
+            "--REDSHIFT_DATABASE_NAME": "dev",
+            "--GLUE_CATALOG_DATABASE_NAME": "shopware_db",
+            "--JOB_BOOKMARK_OPTION": "job-bookmark-enable",
+            "--EXECUTION_NAME.$": "$.pipeline_metadata.execution_name"
+          },
+          "MaxCapacity": 10,
+          "Timeout": 2880
+        },
+        "ResultPath": "$.pos_transform_result",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 120,
+            "MaxAttempts": 2,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyPosFailure"
+          }
+        ],
+        "Next": "UpdatePosTransformStatus"
+      },
+      "UpdatePosTransformStatus": {
+        "Type": "Task",
+        "Comment": "Update POS transformation status in DynamoDB.",
+        "Resource": "arn:aws:states:::dynamodb:updateItem",
+        "Parameters": {
+          "TableName": "shopware_pipeline_status",
+          "Key": {
+            "processing_date": {
+              "S.$": "$.pipeline_metadata.processing_date"
+            }
+          },
+          "UpdateExpression": "SET pos_transform_status = :status, pos_transform_timestamp = :timestamp, execution_name_pos = :execution_name",
+          "ExpressionAttributeValues": {
+            ":status": {
+              "S": "COMPLETED"
+            },
+            ":timestamp": {
+              "S.$": "$$.State.EnteredTime"
+            },
+            ":execution_name": {
+              "S.$": "$.pipeline_metadata.execution_name"
+            }
+          },
+          "ReturnValues": "ALL_NEW"
+        },
+        "ResultPath": "$.pos_dynamodb_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyPosFailure"
+          }
+        ],
+        "Next": "CheckKpiReadiness"
+      },
+      "NotifyPosFailure": {
+        "Type": "Task",
+        "Comment": "Send comprehensive failure notification for POS branch.",
+        "Resource": "arn:aws:states:::sns:publish",
+        "Parameters": {
+          "TopicArn": "arn:aws:sns:eu-north-1:771826808190:shopware-pipeline-failure",
+          "Message": {
+            "pipeline_status": "FAILED",
+            "execution_name.$": "$.pipeline_metadata.execution_name",
+            "pipeline_start_time.$": "$.pipeline_metadata.pipeline_start_time",
+            "failure_time.$": "$$.State.EnteredTime",
+            "data_type": "POS",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "error_details.$": "$.error",
+            "failed_state.$": "$$.State.Name"
+          },
+          "MessageAttributes": {
+            "Status": {
+              "DataType": "String",
+              "StringValue": "FAILED"
+            },
+            "FailedState": {
+              "DataType": "String",
+              "StringValue.$": "$$.State.Name"
+            },
+            "Priority": {
+              "DataType": "String",
+              "StringValue": "HIGH"
+            }
+          },
+          "Subject": "Shopware Unified Pipeline Failure: POS Branch"
+        },
+        "End": true
+      },
+      "InventoryJsonBranch": {
+        "Type": "Task",
+        "Comment": "Convert Inventory JSON to JSONL and move to raw folder using Lambda.",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "arn:aws:lambda:eu-north-1:771826808190:function:json_converter",
+          "Payload": {
+            "bucket.$": "$.pipeline_metadata.bucket",
+            "key.$": "$.pipeline_metadata.key",
+            "target_prefix": "raw/batch/inventory-raw/",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "execution_name.$": "$.pipeline_metadata.execution_name"
+          }
+        },
+        "ResultSelector": {
+          "status.$": "$.Payload.status",
+          "output_location.$": "$.Payload.output_location",
+          "records_converted.$": "$.Payload.records_converted",
+          "processing_date.$": "$.Payload.processing_date",
+          "run_timestamp.$": "$.Payload.run_timestamp"
+        },
+        "ResultPath": "$.inventory_converter_result",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException",
+              "Lambda.TooManyRequestsException"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2.5
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyInventoryFailure"
+          }
+        ],
+        "Next": "StartInventoryCrawler"
+      },
+      "StartInventoryCrawler": {
+        "Type": "Task",
+        "Comment": "Start Glue crawler for Inventory raw JSON data.",
+        "Resource": "arn:aws:states:::aws-sdk:glue:startCrawler",
+        "Parameters": {
+          "Name": "inventory_crawler"
+        },
+        "ResultPath": "$.inventory_crawler_start",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 10,
+            "MaxAttempts": 2,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyInventoryFailure"
+          }
+        ],
+        "Next": "WaitForInventoryCrawlerCompletion"
+      },
+      "WaitForInventoryCrawlerCompletion": {
+        "Type": "Wait",
+        "Comment": "Wait before checking Inventory JSON crawler status.",
+        "Seconds": 30,
+        "Next": "CheckInventoryCrawlerStatus"
+      },
+      "CheckInventoryCrawlerStatus": {
+        "Type": "Task",
+        "Comment": "Check Inventory JSON crawler status until READY.",
+        "Resource": "arn:aws:states:::aws-sdk:glue:getCrawler",
+        "Parameters": {
+          "Name": "inventory_crawler"
+        },
+        "ResultSelector": {
+          "crawler_state.$": "$.Crawler.State"
+        },
+        "ResultPath": "$.inventory_crawler_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyInventoryFailure"
+          }
+        ],
+        "Next": "EvaluateInventoryCrawlerStatus"
+      },
+      "EvaluateInventoryCrawlerStatus": {
+        "Type": "Choice",
+        "Comment": "Loop to wait for Inventory JSON crawler completion.",
+        "Choices": [
+          {
+            "Variable": "$.inventory_crawler_status.crawler_state",
+            "StringEquals": "READY",
+            "Next": "RunInventoryTransformation"
+          }
+        ],
+        "Default": "WaitForInventoryCrawlerCompletion"
+      },
+      "RunInventoryTransformation": {
+        "Type": "Task",
+        "Comment": "Transform Inventory JSON data and load to Redshift using Glue job.",
+        "Resource": "arn:aws:states:::glue:startJobRun.sync",
+        "Parameters": {
+          "JobName": "transformation_inventory",
+          "Arguments": {
+            "--SOURCE_TYPE": "inventory",
+            "--SOURCE_S3_PATH": "s3://shopware-bucket-g3/raw/batch/inventory-raw/",
+            "--TARGET_S3_PATH": "s3://shopware-bucket-g3/processed/inventory/",
+            "--PROCESSING_DATE.$": "$.pipeline_metadata.processing_date",
+            "--RUN_TIMESTAMP.$": "$.pipeline_metadata.pipeline_start_time",
+            "--REDSHIFT_PROCESSED_SCHEMA": "shopware_processed",
+            "--REDSHIFT_PROCESSED_TABLES": "{\"inventory\":\"inventory_daily\"}",
+            "--REDSHIFT_TEMP_DIR": "s3://shopware-bucket-g3/TemporaryDir/",
+            "--REDSHIFT_CONNECTION": "Redshift_connection",
+            "--REDSHIFT_DATABASE_NAME": "dev",
+            "--GLUE_CATALOG_DATABASE_NAME": "shopware_db",
+            "--JOB_BOOKMARK_OPTION": "job-bookmark-enable",
+            "--EXECUTION_NAME.$": "$.pipeline_metadata.execution_name"
+          },
+          "MaxCapacity": 10,
+          "Timeout": 2880
+        },
+        "ResultPath": "$.inventory_transform_result",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 120,
+            "MaxAttempts": 2,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyInventoryFailure"
+          }
+        ],
+        "Next": "UpdateInventoryTransformStatus"
+      },
+      "UpdateInventoryTransformStatus": {
+        "Type": "Task",
+        "Comment": "Update Inventory transformation status in DynamoDB.",
+        "Resource": "arn:aws:states:::dynamodb:updateItem",
+        "Parameters": {
+          "TableName": "shopware_pipeline_status",
+          "Key": {
+            "processing_date": {
+              "S.$": "$.pipeline_metadata.processing_date"
+            }
+          },
+          "UpdateExpression": "SET inventory_transform_status = :status, inventory_transform_timestamp = :timestamp, execution_name_inventory = :execution_name",
+          "ExpressionAttributeValues": {
+            ":status": {
+              "S": "COMPLETED"
+            },
+            ":timestamp": {
+              "S.$": "$$.State.EnteredTime"
+            },
+            ":execution_name": {
+              "S.$": "$.pipeline_metadata.execution_name"
+            }
+          },
+          "ReturnValues": "ALL_NEW"
+        },
+        "ResultPath": "$.inventory_dynamodb_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyInventoryFailure"
+          }
+        ],
+        "Next": "CheckKpiReadiness"
+      },
+      "NotifyInventoryFailure": {
+        "Type": "Task",
+        "Comment": "Send comprehensive failure notification for Inventory branch.",
+        "Resource": "arn:aws:states:::sns:publish",
+        "Parameters": {
+          "TopicArn": "arn:aws:sns:eu-north-1:771826808190:shopware-pipeline-failure",
+          "Message": {
+            "pipeline_status": "FAILED",
+            "execution_name.$": "$.pipeline_metadata.execution_name",
+            "pipeline_start_time.$": "$.pipeline_metadata.pipeline_start_time",
+            "failure_time.$": "$$.State.EnteredTime",
+            "data_type": "Inventory",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "error_details.$": "$.error",
+            "failed_state.$": "$$.State.Name"
+          },
+          "MessageAttributes": {
+            "Status": {
+              "DataType": "String",
+              "StringValue": "FAILED"
+            },
+            "FailedState": {
+              "DataType": "String",
+              "StringValue.$": "$$.State.Name"
+            },
+            "Priority": {
+              "DataType": "String",
+              "StringValue": "HIGH"
+            }
+          },
+          "Subject": "Shopware Unified Pipeline Failure: Inventory Branch"
+        },
+        "End": true
+      },
+      "CheckKpiReadiness": {
+        "Type": "Task",
+        "Comment": "Retrieve DynamoDB status for the current processing date.",
+        "Resource": "arn:aws:states:::dynamodb:getItem",
+        "Parameters": {
+          "TableName": "shopware_pipeline_status",
+          "Key": {
+            "processing_date": {
+              "S.$": "$.pipeline_metadata.processing_date"
+            }
+          }
+        },
+        "ResultPath": "$.dynamodb_current_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyKpiFailure"
+          }
+        ],
+        "Next": "IsKpiReady"
+      },
+      "IsKpiReady": {
+        "Type": "Choice",
+        "Comment": "Check if both POS and Inventory transforms are complete (with safe attribute checking).",
+        "Choices": [
+          {
+            "And": [
+              {
+                "Variable": "$.dynamodb_current_status.Item",
+                "IsPresent": true
+              },
+              {
+                "Variable": "$.dynamodb_current_status.Item.pos_transform_status.S",
+                "IsPresent": true
+              },
+              {
+                "Variable": "$.dynamodb_current_status.Item.inventory_transform_status.S",
+                "IsPresent": true
+              },
+              {
+                "Variable": "$.dynamodb_current_status.Item.pos_transform_status.S",
+                "StringEquals": "COMPLETED"
+              },
+              {
+                "Variable": "$.dynamodb_current_status.Item.inventory_transform_status.S",
+                "StringEquals": "COMPLETED"
+              },
+              {
+                "Or": [
+                  {
+                    "Variable": "$.dynamodb_current_status.Item.kpi_job_triggered",
+                    "IsPresent": false
+                  },
+                  {
+                    "Variable": "$.dynamodb_current_status.Item.kpi_job_triggered.BOOL",
+                    "BooleanEquals": false
+                  }
+                ]
+              }
+            ],
+            "Next": "RunKpiComputation"
+          }
+        ],
+        "Default": "WaitAndRecheckKpiReadiness"
+      },
+      "WaitAndRecheckKpiReadiness": {
+        "Type": "Wait",
+        "Comment": "Wait before re-checking KPI readiness (for the other data type to arrive).",
+        "Seconds": 60,
+        "Next": "CheckKpiReadiness"
+      },
+      "RunKpiComputation": {
+        "Type": "Task",
+        "Comment": "Trigger Glue job for KPI computation.",
+        "Resource": "arn:aws:states:::glue:startJobRun.sync",
+        "Parameters": {
+          "JobName": "compute_kpi_Redshift",
+          "Arguments": {
+            "--JOB_NAME": "compute_kpi_Redshift",
+            "--BUCKET_NAME": "shopware-bucket-g3",
+            "--DATABASE_NAME": "shopware_db",
+            "--REDSHIFT_CONNECTION": "Redshift_connection",
+            "--REDSHIFT_SCHEMA": "shopware_kpis",
+            "--REDSHIFT_PROCESSED_SCHEMA": "shopware_processed",
+            "--TempDir": "s3://shopware-bucket-g3/TemporaryDir/",
+            "--PROCESSING_DATE.$": "$.pipeline_metadata.processing_date",
+            "--RUN_TIMESTAMP.$": "$$.State.EnteredTime",
+            "--GLUE_CATALOG_DATABASE_NAME": "shopware_db",
+            "--EXECUTION_NAME.$": "States.Format('kpi-unified-{}-{}', $.pipeline_metadata.processing_date, $$.Execution.Name)"
+          },
+          "MaxCapacity": 5,
+          "Timeout": 1440
+        },
+        "ResultPath": "$.kpi_job_result",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.TaskFailed"
+            ],
+            "IntervalSeconds": 120,
+            "MaxAttempts": 2,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyKpiFailure"
+          }
+        ],
+        "Next": "UpdateKpiStatus"
+      },
+      "UpdateKpiStatus": {
+        "Type": "Task",
+        "Comment": "Mark KPI as triggered in DynamoDB.",
+        "Resource": "arn:aws:states:::dynamodb:updateItem",
+        "Parameters": {
+          "TableName": "shopware_pipeline_status",
+          "Key": {
+            "processing_date": {
+              "S.$": "$.pipeline_metadata.processing_date"
+            }
+          },
+          "UpdateExpression": "SET kpi_job_triggered = :val, kpi_trigger_timestamp = :ts",
+          "ExpressionAttributeValues": {
+            ":val": {
+              "BOOL": true
+            },
+            ":ts": {
+              "S.$": "$$.State.EnteredTime"
+            }
+          },
+          "ReturnValues": "ALL_NEW"
+        },
+        "ResultPath": "$.kpi_dynamodb_status",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 5,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "ResultPath": "$.error",
+            "Next": "NotifyKpiFailure"
+          }
+        ],
+        "Next": "NotifyUnifiedPipelineSuccess"
+      },
+      "NotifyKpiFailure": {
+        "Type": "Task",
+        "Comment": "Send failure notification for KPI computation.",
+        "Resource": "arn:aws:states:::sns:publish",
+        "Parameters": {
+          "TopicArn": "arn:aws:sns:eu-north-1:771826808190:shopware-pipeline-failure",
+          "Message": {
+            "pipeline_status": "FAILED",
+            "execution_name.$": "$.pipeline_metadata.execution_name",
+            "pipeline_start_time.$": "$.pipeline_metadata.pipeline_start_time",
+            "failure_time.$": "$$.State.EnteredTime",
+            "data_type": "KPI",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "error_details.$": "$.error",
+            "failed_state.$": "$$.State.Name"
+          },
+          "MessageAttributes": {
+            "Status": {
+              "DataType": "String",
+              "StringValue": "FAILED"
+            },
+            "FailedState": {
+              "DataType": "String",
+              "StringValue.$": "$$.State.Name"
+            },
+            "Priority": {
+              "DataType": "String",
+              "StringValue": "HIGH"
+            }
+          },
+          "Subject": "Shopware Unified Pipeline Failure: KPI Computation"
+        },
+        "End": true
+      },
+      "NotifyUnifiedPipelineSuccess": {
+        "Type": "Task",
+        "Comment": "Send success notification for the overall unified pipeline (including KPI).",
+        "Resource": "arn:aws:states:::sns:publish",
+        "Parameters": {
+          "TopicArn": "arn:aws:sns:eu-north-1:771826808190:shopware-pipeline-success",
+          "Message": {
+            "pipeline_status": "SUCCESS",
+            "execution_name.$": "$.pipeline_metadata.execution_name",
+            "pipeline_start_time.$": "$.pipeline_metadata.pipeline_start_time",
+            "pipeline_end_time.$": "$$.State.EnteredTime",
+            "data_type": "Unified",
+            "processing_date.$": "$.pipeline_metadata.processing_date",
+            "kpi_triggered": true
+          },
+          "MessageAttributes": {
+            "Status": {
+              "DataType": "String",
+              "StringValue": "SUCCESS"
+            },
+            "ProcessingDate": {
+              "DataType": "String",
+              "StringValue.$": "$.pipeline_metadata.processing_date"
+            },
+            "DataType": {
+              "DataType": "String",
+              "StringValue": "Unified"
+            }
+          },
+          "Subject": "Shopware Unified Pipeline Success (KPI Included)"
+        },
+        "End": true
+      }
+    }
+  }
