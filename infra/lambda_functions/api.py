@@ -41,7 +41,7 @@ def send_to_firehose(stream_name, data):
         )
         print(f"✅ Sent to Firehose: {stream_name}")
     except Exception as e:
-        print(f"❌ Firehose failed ({stream_name}): {e}")
+        print(f" Firehose failed ({stream_name}): {e}")
 
 # === CLEANERS ===
 
