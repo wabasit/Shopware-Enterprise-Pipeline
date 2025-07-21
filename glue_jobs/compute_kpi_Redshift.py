@@ -439,7 +439,7 @@ def write_to_redshift(df, table_name, current_processing_date_str, log_data):
             catalog_connection=REDSHIFT_CONNECTION,
             connection_options={
                 # Delete by analysis_date to handle re-runs (upsert logic)
-                "preactions": f"DELETE FROM {table_name} WHERE analysis_date = '{current_processing_date_str}';",
+                #"preactions": f"DELETE FROM {table_name} WHERE analysis_date = '{current_processing_date_str}';",
                 "dbtable": table_name,
                 "database": "dev" # Use the actual Redshift database name
             },
