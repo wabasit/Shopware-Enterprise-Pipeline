@@ -30,7 +30,7 @@ def fetch_data(api_url):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"⚠️ Failed to fetch from {api_url}: {e}")
+        print(f" Failed to fetch from {api_url}: {e}")
         return None
 
 def send_to_firehose(stream_name, data):
